@@ -79,27 +79,32 @@ var dtypeTable = map[Dtype]dtypeProps{
 	DtypeU8:   {BitsPerWeight: 8, BlockSize: 1},
 	DtypeBool: {BitsPerWeight: 8, BlockSize: 1},
 
-	DtypeQ4_0:   {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 32},
-	DtypeQ4_1:   {BitsPerWeight: 5.0, IsQuantized: true, BlockSize: 32},
-	DtypeQ5_0:   {BitsPerWeight: 5.5, IsQuantized: true, BlockSize: 32},
-	DtypeQ5_1:   {BitsPerWeight: 6.0, IsQuantized: true, BlockSize: 32},
-	DtypeQ8_0:   {BitsPerWeight: 8.5, IsQuantized: true, BlockSize: 32},
-	DtypeQ8_1:   {BitsPerWeight: 9.0, IsQuantized: true, BlockSize: 32},
-	DtypeQ2K:    {BitsPerWeight: 2.5625, IsQuantized: true, BlockSize: 256},
-	DtypeQ3K:    {BitsPerWeight: 3.4375, IsQuantized: true, BlockSize: 256},
-	DtypeQ4K:    {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 256},
-	DtypeQ5K:    {BitsPerWeight: 5.5, IsQuantized: true, BlockSize: 256},
-	DtypeQ6K:    {BitsPerWeight: 6.5625, IsQuantized: true, BlockSize: 256},
-	DtypeQ8K:    {BitsPerWeight: 8.5, IsQuantized: true, BlockSize: 256},
-	DtypeIQ2XXS: {BitsPerWeight: 2.0625, IsQuantized: true, BlockSize: 256},
-	DtypeIQ2XS:  {BitsPerWeight: 2.3125, IsQuantized: true, BlockSize: 256},
-	DtypeIQ3XXS: {BitsPerWeight: 3.0625, IsQuantized: true, BlockSize: 256},
-	DtypeIQ1S:   {BitsPerWeight: 1.5625, IsQuantized: true, BlockSize: 256},
-	DtypeIQ4NL:  {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 32},
-	DtypeIQ3S:   {BitsPerWeight: 3.4375, IsQuantized: true, BlockSize: 256},
-	DtypeIQ2S:   {BitsPerWeight: 2.5, IsQuantized: true, BlockSize: 256},
-	DtypeIQ4XS:  {BitsPerWeight: 4.25, IsQuantized: true, BlockSize: 256},
-	DtypeIQ1M:   {BitsPerWeight: 1.75, IsQuantized: true, BlockSize: 256},
+	DtypeQ4_0: {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 32},
+	DtypeQ4_1: {BitsPerWeight: 5.0, IsQuantized: true, BlockSize: 32},
+	DtypeQ5_0: {BitsPerWeight: 5.5, IsQuantized: true, BlockSize: 32},
+	DtypeQ5_1: {BitsPerWeight: 6.0, IsQuantized: true, BlockSize: 32},
+	DtypeQ8_0: {BitsPerWeight: 8.5, IsQuantized: true, BlockSize: 32},
+	DtypeQ8_1: {BitsPerWeight: 9.0, IsQuantized: true, BlockSize: 32},
+	// 以下位宽由块字节数推导：bits = BlockBytes × 8 / BlockSize。
+	// 数值经真实 GGUF 文件反推验证（见 gguf 包的 TestBlockTable_与真实文件吻合）。
+	DtypeQ2K: {BitsPerWeight: 2.625, IsQuantized: true, BlockSize: 256},
+	DtypeQ3K: {BitsPerWeight: 3.4375, IsQuantized: true, BlockSize: 256},
+	DtypeQ4K: {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 256},
+	DtypeQ5K: {BitsPerWeight: 5.5, IsQuantized: true, BlockSize: 256},
+	DtypeQ6K: {BitsPerWeight: 6.5625, IsQuantized: true, BlockSize: 256},
+	DtypeQ8K: {BitsPerWeight: 9.125, IsQuantized: true, BlockSize: 256},
+
+	// IQ 系列（i-quants）的块结构复杂且未在本项目中验证，
+	// 因此不给位宽 —— 计算占用大小时会明确报"未收录"，而不是给出可能错误的数字。
+	DtypeIQ2XXS: {IsQuantized: true, BlockSize: 256},
+	DtypeIQ2XS:  {IsQuantized: true, BlockSize: 256},
+	DtypeIQ3XXS: {IsQuantized: true, BlockSize: 256},
+	DtypeIQ1S:   {IsQuantized: true, BlockSize: 256},
+	DtypeIQ4NL:  {IsQuantized: true, BlockSize: 32},
+	DtypeIQ3S:   {IsQuantized: true, BlockSize: 256},
+	DtypeIQ2S:   {IsQuantized: true, BlockSize: 256},
+	DtypeIQ4XS:  {IsQuantized: true, BlockSize: 256},
+	DtypeIQ1M:   {IsQuantized: true, BlockSize: 256},
 }
 
 // Props 返回该类型的存储属性。未知类型返回零值。
