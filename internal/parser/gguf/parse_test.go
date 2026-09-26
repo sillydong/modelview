@@ -109,6 +109,7 @@ func TestParse_数据区偏移正确(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // 只读文件，Close 失败不影响测试
 	defer f.Close()
 
 	buf := make([]byte, 16)

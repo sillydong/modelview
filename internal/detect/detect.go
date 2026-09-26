@@ -26,6 +26,7 @@ func Probe(path string) (model.Format, error) {
 	if err != nil {
 		return model.FormatUnknown, fmt.Errorf("打开文件: %w", err)
 	}
+	//nolint:errcheck // 只读文件，Close 失败不影响判断结果
 	defer f.Close()
 
 	var head [8]byte

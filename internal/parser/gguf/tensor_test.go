@@ -2,10 +2,14 @@ package gguf
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+
+	"github.com/sillydong/modelview/internal/model"
 )
 
 func TestReadTensorInfos(t *testing.T) {
@@ -177,11 +181,13 @@ func TestBlockTable_自洽(t *testing.T) {
 	}
 }
 
-// 最强的验证：对真实文件，按块表累加所有张量字节数，
-// 最后一个张量的结束位置必须恰好等于文件大小。
+// 最强的验证：真实文件里所有张量的字节区间必须互不重叠。
 //
-// 这条测试直接证明了块大小表是对的 —— 只要有一个类型的块大小写错，
-// 累加结果就会和文件大小对不上。
+// 这条不变式能抓住任何一处块大小写错 —— 只要某个类型的块大小偏大，
+// 该类型张量的结束位置就会越过下一个张量的起点，重叠量恰好等于误差。
+//
+// 注意不能只检查"最后一个张量结束于文件末尾"：那样只有排在最末的那个
+// 类型会被验证到，其它类型写错也发现不了。
 func TestBlockTable_与真实文件吻合(t *testing.T) {
 	blobs := []string{
 		"sha256-5ee4f07cdb9bead", // qwen2.5:3b     F32/Q4_K/Q6_K
@@ -203,21 +209,38 @@ func TestBlockTable_与真实文件吻合(t *testing.T) {
 				t.Fatalf("Parse 失败: %v", err)
 			}
 
-			var maxEnd int64
-			for _, tn := range m.Tensors {
+			sorted := make([]*model.Tensor, len(m.Tensors))
+			copy(sorted, m.Tensors)
+			slices.SortFunc(sorted, func(a, b *model.Tensor) int {
+				return cmp.Compare(a.Offset, b.Offset)
+			})
+
+			align := int64(32)
+			for _, tn := range sorted {
 				if tn.ByteSize == 0 {
 					t.Fatalf("%s 的字节数为 0（类型 %s 未收录）", tn.Name, tn.Dtype)
 				}
-				if end := tn.Offset + tn.ByteSize; end > maxEnd {
-					maxEnd = end
+			}
+
+			for i := 1; i < len(sorted); i++ {
+				prev, cur := sorted[i-1], sorted[i]
+				end := prev.Offset + prev.ByteSize
+				if end > cur.Offset {
+					t.Fatalf("张量重叠 %d 字节：\n  %s 结束于 %d\n  %s 起始于 %d\n"+
+						"说明这两者之一的块大小算错了",
+						end-cur.Offset, prev.Name, end, cur.Name, cur.Offset)
+				}
+				// 张量之间只应有对齐填充，不应有大段空隙。
+				if gap := cur.Offset - end; gap >= align {
+					t.Errorf("张量间空隙 %d 字节（≥ 对齐 %d）：%s 结束于 %d，%s 起始于 %d",
+						gap, align, prev.Name, end, cur.Name, cur.Offset)
 				}
 			}
 
-			// 允许尾部有少量对齐填充，但不能差出 1 KiB 以上。
-			diff := m.FileSize - maxEnd
-			if diff < 0 || diff > 1024 {
-				t.Errorf("最后一个张量结束于 %d，文件大小 %d，差值 %d（超出容差）",
-					maxEnd, m.FileSize, diff)
+			last := sorted[len(sorted)-1]
+			if diff := m.FileSize - (last.Offset + last.ByteSize); diff < 0 || diff > 1024 {
+				t.Errorf("最后一个张量 %s 结束于 %d，文件大小 %d，差值 %d",
+					last.Name, last.Offset+last.ByteSize, m.FileSize, diff)
 			}
 		})
 	}

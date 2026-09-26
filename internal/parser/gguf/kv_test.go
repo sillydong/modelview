@@ -2,6 +2,7 @@ package gguf
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"testing"
 )
@@ -239,6 +240,49 @@ func TestReadKVs_超长字符串报错(t *testing.T) {
 	mustSkipHeader(t, r)
 	if _, err := readKVs(r, 1); err == nil {
 		t.Fatal("超长字符串应报错，实际为 nil")
+	}
+}
+
+// 声称超大条数的元数据必须被拒绝，而不是尝试分配内存。
+func TestReadKVs_条数超限报错(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 0, 0)
+
+	r := newReader(bytes.NewReader(b.bytes()))
+	mustSkipHeader(t, r)
+	_, err := readKVs(r, maxArrayLen+1)
+	// 必须断言的是"哪个错误"：去掉上限检查后，循环会在读第一个条目时
+	// 因为数据耗尽而报错 —— 那样的测试会因为错误的理由通过。
+	if !errors.Is(err, ErrTooManyEntries) {
+		t.Fatalf("err = %v, 期望 ErrTooManyEntries", err)
+	}
+}
+
+// 声称超大长度的数组必须被拒绝，而不是尝试分配内存。
+func TestReadKVs_数组长度超限报错(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 0, 1)
+	// 元素类型 u32，长度声称 1 亿 + 1
+	b.kv("huge", typeArray).u32(typeUint32).u64(maxArrayLen + 1)
+
+	r := newReader(bytes.NewReader(b.bytes()))
+	mustSkipHeader(t, r)
+	_, err := readKVs(r, 1)
+	if !errors.Is(err, ErrTooManyEntries) {
+		t.Fatalf("err = %v, 期望 ErrTooManyEntries（而不是读到一半才失败）", err)
+	}
+}
+
+// 声称超大个数的张量必须被拒绝。
+func TestReadTensorInfos_个数超限报错(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 0, 0)
+
+	r := newReader(bytes.NewReader(b.bytes()))
+	mustSkipHeader(t, r)
+	_, err := readTensorInfos(r, maxArrayLen+1)
+	if !errors.Is(err, ErrTooManyEntries) {
+		t.Fatalf("err = %v, 期望 ErrTooManyEntries", err)
 	}
 }
 

@@ -16,6 +16,7 @@ func Parse(path string) (*model.Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开 %s: %w", path, err)
 	}
+	//nolint:errcheck // 只读文件，Close 失败不影响解析结果
 	defer f.Close()
 
 	st, err := f.Stat()

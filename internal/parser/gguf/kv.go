@@ -1,6 +1,17 @@
 package gguf
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrTooManyEntries 表示文件声称的条目数（元数据条数 / 张量个数 / 数组长度）
+// 超过 maxArrayLen。
+//
+// 这是一个可识别的哨兵错误：调用方与测试可以区分
+// "因为数量异常被拒绝" 和 "读到一半数据不够了" ——
+// 两者的含义完全不同，前者是防御性拒绝，后者是文件损坏。
+var ErrTooManyEntries = errors.New("条目数超过上限")
 
 // GGUF 元数据值类型码。
 //
@@ -105,7 +116,7 @@ func (r *reader) scalar(t uint32) (any, error) {
 // 否则文件指针会错位，后续所有字段都会读错。
 func readKVs(r *reader, n uint64) ([]rawKV, error) {
 	if n > maxArrayLen {
-		return nil, fmt.Errorf("元数据条数 %d 异常", n)
+		return nil, fmt.Errorf("元数据条数 %d: %w（上限 %d）", n, ErrTooManyEntries, maxArrayLen)
 	}
 	out := make([]rawKV, 0, n)
 	for i := uint64(0); i < n; i++ {
@@ -161,7 +172,7 @@ func readArray(r *reader) (arrayValue, error) {
 		return arrayValue{}, err
 	}
 	if n > maxArrayLen {
-		return arrayValue{}, fmt.Errorf("数组长度 %d 超出上限 %d", n, maxArrayLen)
+		return arrayValue{}, fmt.Errorf("数组长度 %d: %w（上限 %d）", n, ErrTooManyEntries, maxArrayLen)
 	}
 	a := arrayValue{ElemType: elemType, Len: n}
 	switch elemType {
