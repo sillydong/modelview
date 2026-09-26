@@ -74,8 +74,26 @@ type rawKV struct {
 
 // maxArrayLen 是数组元素个数的上限（1 亿），
 // 以及元数据条数、张量个数的上限。
-// 防止损坏文件声称一个巨大的数量导致尝试分配内存。
 const maxArrayLen = 100_000_000
+
+// preallocCap 是**按声明数量预分配容量**的上限。
+//
+// 上限检查本身拦不住内存放大：一个 49 字节的损坏文件可以声称数组长度 1 亿，
+// 校验通过后紧接着 make([]T, 0, 1e8) 就会在读取任何元素之前申请数 GiB 内存，
+// 然后才在第 0 个元素处因 EOF 失败。守卫必须拦在分配之前。
+//
+// 声明数量在 4K 以内的按实际值预分配；超过则封顶，靠 append 自行扩容。
+// 合法 GGUF 的元数据与张量都是几千条量级，超过 4K 只会出现在最长的
+// tokenizer 词表数组上，而那个场景下 append 的增长代价可以忽略。
+const preallocCap = 4096
+
+// capFor 返回按声明数量 n 预分配时应使用的容量。
+func capFor(n uint64) int {
+	if n > preallocCap {
+		return preallocCap
+	}
+	return int(n)
+}
 
 // scalar 读取一个非数组、非字符串的标量值。
 func (r *reader) scalar(t uint32) (any, error) {
@@ -118,7 +136,7 @@ func readKVs(r *reader, n uint64) ([]rawKV, error) {
 	if n > maxArrayLen {
 		return nil, fmt.Errorf("元数据条数 %d: %w（上限 %d）", n, ErrTooManyEntries, maxArrayLen)
 	}
-	out := make([]rawKV, 0, n)
+	out := make([]rawKV, 0, capFor(n))
 	for i := uint64(0); i < n; i++ {
 		key, err := r.str()
 		if err != nil {
@@ -177,7 +195,7 @@ func readArray(r *reader) (arrayValue, error) {
 	a := arrayValue{ElemType: elemType, Len: n}
 	switch elemType {
 	case typeString:
-		a.StrElems = make([]string, 0, n)
+		a.StrElems = make([]string, 0, capFor(n))
 		for i := uint64(0); i < n; i++ {
 			s, err := r.str()
 			if err != nil {
@@ -186,7 +204,7 @@ func readArray(r *reader) (arrayValue, error) {
 			a.StrElems = append(a.StrElems, s)
 		}
 	case typeArray:
-		a.Nested = make([]arrayValue, 0, n)
+		a.Nested = make([]arrayValue, 0, capFor(n))
 		for i := uint64(0); i < n; i++ {
 			sub, err := readArray(r)
 			if err != nil {
@@ -195,7 +213,7 @@ func readArray(r *reader) (arrayValue, error) {
 			a.Nested = append(a.Nested, sub)
 		}
 	default:
-		a.NumElems = make([]any, 0, n)
+		a.NumElems = make([]any, 0, capFor(n))
 		for i := uint64(0); i < n; i++ {
 			v, err := r.scalar(elemType)
 			if err != nil {

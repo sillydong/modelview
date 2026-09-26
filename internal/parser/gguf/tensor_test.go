@@ -156,6 +156,95 @@ func TestTensorByteSize(t *testing.T) {
 	}
 }
 
+// 覆盖块表里的**每一个**类型码。
+//
+// 期望值独立于实现：直接来自 llama.cpp 的 block_* 结构体定义，算式写在注释里。
+// 不从 blockBytes 反算 —— 否则就是同义反复，表写错了测试跟着一起错。
+//
+// 注意：下面这张表的存在意义是"换台机器也能验证"。真实文件回归测试
+// 依赖 ~/.ollama 目录，在 CI 或别人机器上会整个 SKIP。
+func TestTensorByteSize_覆盖全部类型码(t *testing.T) {
+	const (
+		qk4 = 32  // QK4_0 / QK5_0 / QK8_0 系列块大小
+		qkK = 256 // QK_K 系列块大小
+	)
+
+	tests := []struct {
+		code uint32
+		name string
+		// dtype 是期望映射到的类型
+		dtype model.Dtype
+		// perUnit 是「一个单位」占用的字节数：
+		// 非量化类型 = 单个元素；量化类型 = 一个块。
+		perUnit int64
+		// unit 是「一个单位」包含多少个权重：
+		// 非量化类型 = 1；量化类型 = 块大小。
+		unit int64
+	}{
+		// 非量化：perUnit = 每元素字节数，unit = 1
+		{0, "F32", model.DtypeF32, 4, 1},
+		{1, "F16", model.DtypeF16, 2, 1},
+		{28, "F64", model.DtypeF64, 8, 1},
+		{30, "BF16", model.DtypeBF16, 2, 1},
+		{24, "I8", model.DtypeI8, 1, 1},
+		{25, "I16", model.DtypeI16, 2, 1},
+		{26, "I32", model.DtypeI32, 4, 1},
+		{27, "I64", model.DtypeI64, 8, 1},
+
+		// 量化（块 32）：2(d) + [scale/min/qh] + qs
+		{2, "Q4_0", model.DtypeQ4_0, 2 + 16, qk4},
+		{3, "Q4_1", model.DtypeQ4_1, 2 + 2 + 16, qk4},
+		{6, "Q5_0", model.DtypeQ5_0, 2 + 4 + 16, qk4},
+		{7, "Q5_1", model.DtypeQ5_1, 2 + 2 + 4 + 16, qk4},
+		{8, "Q8_0", model.DtypeQ8_0, 2 + 32, qk4},
+		{9, "Q8_1", model.DtypeQ8_1, 2 + 2 + 32, qk4},
+
+		// 量化（块 256）
+		{10, "Q2_K", model.DtypeQ2K, 16 + 64 + 2 + 2, qkK},
+		{11, "Q3_K", model.DtypeQ3K, 32 + 64 + 12 + 2, qkK},
+		{12, "Q4_K", model.DtypeQ4K, 2 + 2 + 12 + 128, qkK},
+		{13, "Q5_K", model.DtypeQ5K, 2 + 2 + 12 + 32 + 128, qkK},
+		{14, "Q6_K", model.DtypeQ6K, 128 + 64 + 16 + 2, qkK},
+		{15, "Q8_K", model.DtypeQ8K, 4 + 256 + 32, qkK},
+	}
+
+	// 这张表必须覆盖块表的全部条目 —— 新增类型时同步补进来。
+	if len(tests) != len(blockBytes) {
+		t.Errorf("本表覆盖 %d 个类型，块表有 %d 个 —— 有类型没被验证到",
+			len(tests), len(blockBytes))
+	}
+
+	// want 按元素数算出期望字节数。
+	want := func(perUnit, unit, elems int64) int64 {
+		return (elems / unit) * perUnit
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 元素数取块大小的整数倍，量化与非量化都能用同一个算式
+			for _, mult := range []int64{1, 3} {
+				elems := tt.unit * mult
+				got, err := tensorByteSize([]int64{elems}, tt.code)
+				if err != nil {
+					t.Fatalf("tensorByteSize(%d 个元素) 失败: %v", elems, err)
+				}
+				if w := want(tt.perUnit, tt.unit, elems); got != w {
+					t.Errorf("%d 个元素 → %d 字节, want %d", elems, got, w)
+				}
+			}
+
+			// 类型码必须映射到预期的 Dtype
+			dt, ok := ggmlDtype(tt.code)
+			if !ok {
+				t.Fatalf("类型码 %d 未识别", tt.code)
+			}
+			if dt != tt.dtype {
+				t.Errorf("ggmlDtype(%d) = %q, want %q", tt.code, dt, tt.dtype)
+			}
+		})
+	}
+}
+
 // 未收录类型必须返回可识别的错误，而不是静默返回 0。
 func TestTensorByteSize_未收录类型返回可识别错误(t *testing.T) {
 	_, err := tensorByteSize([]int64{256}, 16) // IQ2_XXS

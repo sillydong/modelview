@@ -37,14 +37,40 @@ func TestGGMLDtype(t *testing.T) {
 
 // 每个已识别的类型码都必须在 model 的位宽表里有对应项，
 // 否则用于展示的位宽会是 0。
+//
+// 遍历 map 而不是遍历 0..N —— 固定上界会在新增更大的类型码时静默失效。
 func TestGGMLDtype_全部在model表内(t *testing.T) {
-	for code := uint32(0); code <= 40; code++ {
-		dt, ok := ggmlDtype(code)
-		if !ok {
-			continue
-		}
+	for code, dt := range ggmlTypeCode {
 		if !dt.Known() {
 			t.Errorf("类型码 %d → %q 在 model.dtypeTable 中缺失", code, dt)
+		}
+	}
+}
+
+// 反向闸门：**每个声明了位宽的类型码，都必须在块表里有一项**。
+//
+// 这是防漂移的关键一环。位宽表与块表是同一事实的两处表达，
+// 只检查"块表里的码在位宽表里有对应项"是不够的 ——
+// 那会让"位宽表有、块表没有"的新增类型静默通过，
+// 结果是该类型所有张量的 byte_size 恒为 0，而没有任何测试失败。
+func TestBlockTable_声明位宽的类型必须在块表(t *testing.T) {
+	for code, dt := range ggmlTypeCode {
+		if dt.BitsPerWeight() == 0 {
+			continue // IQ 系列故意不声明位宽
+		}
+		if _, ok := blockBytes[code]; !ok {
+			t.Errorf("类型码 %d（%s）声明了位宽 %.4f，却不在块表里 —— "+
+				"该类型的张量将无法计算占用大小",
+				code, dt, dt.BitsPerWeight())
+		}
+	}
+}
+
+// 反向闸门之二：块表里的每个码都必须是已知类型码。
+func TestBlockTable_块表里的码都已知(t *testing.T) {
+	for code := range blockBytes {
+		if _, ok := ggmlTypeCode[code]; !ok {
+			t.Errorf("类型码 %d 在块表里但不在类型码表里", code)
 		}
 	}
 }
@@ -74,11 +100,7 @@ func TestBlockTable_与位宽表自洽(t *testing.T) {
 
 // 未声明位宽的类型（IQ 系列）必须也不在块表里 —— 否则算出的占用大小会与展示的位宽矛盾。
 func TestBlockTable_未声明位宽的类型不在块表(t *testing.T) {
-	for code := uint32(0); code <= 40; code++ {
-		dt, ok := ggmlDtype(code)
-		if !ok {
-			continue
-		}
+	for code, dt := range ggmlTypeCode {
 		if dt.BitsPerWeight() == 0 {
 			if _, inBlock := blockBytes[code]; inBlock {
 				t.Errorf("%s（码 %d）未声明位宽，却在块表里", dt, code)

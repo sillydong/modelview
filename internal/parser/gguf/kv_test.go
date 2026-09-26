@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"runtime"
 	"testing"
 )
 
@@ -270,6 +271,79 @@ func TestReadKVs_数组长度超限报错(t *testing.T) {
 	_, err := readKVs(r, 1)
 	if !errors.Is(err, ErrTooManyEntries) {
 		t.Fatalf("err = %v, 期望 ErrTooManyEntries（而不是读到一半才失败）", err)
+	}
+}
+
+// 声称超大数量必须在**分配内存之前**被拦住。
+//
+// 这是一条防回归测试：曾经的写法是先做上限检查、再 make([]T, 0, n) 预分配，
+// 结果一个几十字节的损坏文件声称 1 亿条，校验通过后立刻申请数 GiB 内存，
+// 直到读第 0 个元素才因 EOF 失败 —— 守卫只拦下了报错，没拦下它声称要防的分配。
+func TestReadKVs_超大声明不触发巨额分配(t *testing.T) {
+	const limit = 64 << 20 // 64 MiB，远超正常头部，远低于 1e8 元素的开销
+
+	tests := []struct {
+		name  string
+		build func() []byte
+	}{
+		{
+			name: "元数据条数声称 1 亿",
+			build: func() []byte {
+				b := newBuilder()
+				b.header(3, 0, 0)
+				return b.bytes()
+			},
+		},
+		{
+			name: "嵌套数组长度声称 1 亿（arrayValue 元素最大）",
+			build: func() []byte {
+				b := newBuilder()
+				b.header(3, 0, 1)
+				b.kv("nested", typeArray).u32(typeArray).u64(maxArrayLen)
+				return b.bytes()
+			},
+		},
+		{
+			name: "字符串数组长度声称 1 亿",
+			build: func() []byte {
+				b := newBuilder()
+				b.header(3, 0, 1)
+				b.kv("strs", typeArray).u32(typeString).u64(maxArrayLen)
+				return b.bytes()
+			},
+		},
+		{
+			name: "数值数组长度声称 1 亿（any 元素 16 字节）",
+			build: func() []byte {
+				b := newBuilder()
+				b.header(3, 0, 1)
+				b.kv("nums", typeArray).u32(typeUint32).u64(maxArrayLen)
+				return b.bytes()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := tt.build()
+
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+
+			r := newReader(bytes.NewReader(data))
+			mustSkipHeader(t, r)
+			// 无论报不报错，都不该发生巨额分配。
+			_, _ = readKVs(r, maxArrayLen)
+
+			runtime.ReadMemStats(&after)
+			allocated := after.TotalAlloc - before.TotalAlloc
+			if allocated > limit {
+				t.Errorf("声明 %d 条时分配了 %.1f MiB（上限 %.0f MiB）——"+
+					"预分配必须在取 min(声明值, preallocCap) 之后再 make",
+					uint64(maxArrayLen), float64(allocated)/(1<<20), float64(limit)/(1<<20))
+			}
+		})
 	}
 }
 

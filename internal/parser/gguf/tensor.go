@@ -18,7 +18,7 @@ func readTensorInfos(r *reader, n uint64) ([]tensorInfo, error) {
 	if n > maxArrayLen {
 		return nil, fmt.Errorf("张量个数 %d: %w（上限 %d）", n, ErrTooManyEntries, maxArrayLen)
 	}
-	out := make([]tensorInfo, 0, n)
+	out := make([]tensorInfo, 0, capFor(n))
 	for i := uint64(0); i < n; i++ {
 		name, err := r.str()
 		if err != nil {

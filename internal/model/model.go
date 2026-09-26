@@ -32,7 +32,7 @@ type QuantInfo struct {
 
 // Tensor 是一个张量。
 //
-// 解析阶段只填名称、形状、类型、位置；Stats 与 Quant 由 analyze 包懒加载填充。
+// 解析阶段只填名称、形状、类型、位置；Quant 由 analyze 包懒加载填充。
 type Tensor struct {
 	Name       string  `json:"name"`
 	Dims       []int64 `json:"dims"`
@@ -40,6 +40,10 @@ type Tensor struct {
 	Offset     int64   `json:"offset"`      // 数据在文件中的绝对偏移
 	ByteSize   int64   `json:"byte_size"`   // 数据占用的字节数
 	ParamCount int64   `json:"param_count"` // 元素个数 = dims 连乘
+
+	// SizeUnknown 表示 ByteSize 无法计算（如未收录的量化类型）。
+	// 单独一个字段是必要的：否则 ByteSize==0 会被读成"这个张量真的是 0 字节"。
+	SizeUnknown bool `json:"size_unknown,omitempty"`
 
 	Quant *QuantInfo `json:"quant,omitempty"`
 }
@@ -54,8 +58,17 @@ type Model struct {
 	Metadata []MetaKV  `json:"metadata"`
 	Tensors  []*Tensor `json:"tensors"`
 
-	// Extra 保存格式特有的附加信息，如 ZIP 条目数、数据区起点。
-	Extra map[string]string `json:"extra,omitempty"`
+	// 数据区布局。各格式按需填充，0 表示该格式无此概念。
+	//
+	// 这些是有类型的具名字段，不是 map —— 键名漂移在 map 里既无编译错误
+	// 也无测试失败，只会让消费方静默读到零值。
+	Alignment   int64 `json:"alignment,omitempty"`
+	DataStart   int64 `json:"data_start,omitempty"`
+	HeaderBytes int64 `json:"header_bytes,omitempty"`
+
+	// Warnings 记录解析过程中被降级处理、但用户应当知道的问题。
+	// 例如未收录的量化类型导致占用大小算不出来。
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // TotalParams 返回所有张量的元素总数。

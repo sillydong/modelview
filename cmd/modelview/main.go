@@ -71,10 +71,19 @@ func printSummary(m *model.Model) {
 	fmt.Printf("架构     %s\n", orDash(m.Arch))
 	fmt.Printf("元数据   %d 条\n", len(m.Metadata))
 	fmt.Printf("张量     %d 个\n", len(m.Tensors))
-	fmt.Printf("总参数   %s\n", humanCount(m.TotalParams()))
+	// 精确值 + SI 前缀缩写。刻意不用 "B" ——
+	// 上一行的 GiB 已经让读者把 B 理解成字节，3.086 B 会被读成"3 个字节"。
+	fmt.Printf("总参数   %s（%s）\n", humanCount(m.TotalParams()), commaInt(m.TotalParams()))
 
-	if v := m.Extra["alignment"]; v != "" {
-		fmt.Printf("对齐     %s 字节（数据区起点 %s）\n", v, m.Extra["data_start"])
+	if m.Alignment > 0 {
+		fmt.Printf("对齐     %d 字节（数据区起点 %d）\n", m.Alignment, m.DataStart)
+	}
+
+	if n := len(m.Warnings); n > 0 {
+		fmt.Printf("\n⚠ 告警（%d 条）\n", n)
+		for _, w := range m.Warnings {
+			fmt.Printf("  %s\n", w)
+		}
 	}
 
 	hist := m.DtypeHistogram()
@@ -140,11 +149,15 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.2f PiB", v/unit)
 }
 
+// humanCount 用 SI 前缀（K/M/G/T，1000 进制）缩写参数量。
+//
+// 刻意不使用 "B"：摘要里同一屏的 humanBytes 用 "B" 表示字节，
+// 两个 B 并排出现会让 "3.086 B" 被误读成三个字节。
 func humanCount(n int64) string {
 	if n < 1000 {
 		return strconv.FormatInt(n, 10)
 	}
-	units := []string{"K", "M", "B", "T"}
+	units := []string{"K", "M", "G", "T"}
 	v := float64(n)
 	for _, u := range units {
 		v /= 1000
@@ -153,4 +166,24 @@ func humanCount(n int64) string {
 		}
 	}
 	return fmt.Sprintf("%.3f P", v/1000)
+}
+
+// commaInt 给整数加千位分隔符，用于展示精确值。
+func commaInt(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var sb strings.Builder
+	if neg {
+		sb.WriteByte('-')
+	}
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteRune(c)
+	}
+	return sb.String()
 }

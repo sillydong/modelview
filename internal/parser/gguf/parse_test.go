@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sillydong/modelview/internal/model"
@@ -144,8 +145,8 @@ func TestParse_自定义对齐(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse 失败: %v", err)
 	}
-	if got := m.Extra["alignment"]; got != "64" {
-		t.Errorf("alignment = %q, want 64", got)
+	if got := m.Alignment; got != 64 {
+		t.Errorf("Alignment = %d, want 64", got)
 	}
 	if m.Tensors[0].Offset%64 != 0 {
 		t.Errorf("偏移 %d 未按 64 对齐", m.Tensors[0].Offset)
@@ -171,6 +172,77 @@ func TestParse_不支持的版本报错(t *testing.T) {
 	p := writeFile(t, "v1.gguf", b.bytes())
 	if _, err := Parse(p); err == nil {
 		t.Fatal("GGUF v1 应报错")
+	}
+}
+
+// 算不出大小的张量必须产生告警，且带 SizeUnknown 标记。
+// 静默给 0 会让用户以为"这个张量真的是 0 字节"。
+func TestParse_未收录类型产生告警(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 1, 0)
+	b.str("iq_tensor")
+	b.u32(1)
+	b.u64(256)
+	b.u32(16) // IQ2_XXS，块表未收录
+	b.u64(0)
+	b.raw(make([]byte, alignUp(int64(len(b.bytes())), 32)-int64(len(b.bytes()))))
+
+	m, err := Parse(writeFile(t, "iq.gguf", b.bytes()))
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if len(m.Warnings) == 0 {
+		t.Fatal("未收录类型必须产生告警，实际没有")
+	}
+	if !strings.Contains(m.Warnings[0], "iq_tensor") {
+		t.Errorf("告警应指明是哪个张量，实际: %q", m.Warnings[0])
+	}
+	if !m.Tensors[0].SizeUnknown {
+		t.Error("SizeUnknown 应为 true —— 否则 ByteSize==0 会被读成真实值")
+	}
+}
+
+// alignment 取值异常必须告警，不能静默退回默认值 ——
+// 否则所有张量 offset 整片偏移而界面看不出异常。
+func TestParse_alignment异常告警(t *testing.T) {
+	tests := []struct {
+		name  string
+		value func(b *builder)
+	}{
+		{"alignment 为 0", func(b *builder) { b.kv("general.alignment", typeUint32).u32(0) }},
+		{"alignment 类型错误（字符串）", func(b *builder) { b.kv("general.alignment", typeString).str("32") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := newBuilder()
+			b.header(3, 0, 1)
+			tt.value(b)
+
+			m, err := Parse(writeFile(t, "x.gguf", b.bytes()))
+			if err != nil {
+				t.Fatalf("Parse 失败: %v", err)
+			}
+			found := false
+			for _, w := range m.Warnings {
+				if strings.Contains(w, "alignment") {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("应产生 alignment 告警，实际告警: %v", m.Warnings)
+			}
+		})
+	}
+}
+
+// 正常文件不应产生任何告警 —— 否则告警就失去信号价值。
+func TestParse_正常文件无告警(t *testing.T) {
+	m, err := Parse(writeFile(t, "min.gguf", buildMinimalGGUF()))
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if len(m.Warnings) != 0 {
+		t.Errorf("正常文件不该有告警，实际: %v", m.Warnings)
 	}
 }
 
