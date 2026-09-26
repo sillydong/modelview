@@ -1,6 +1,9 @@
 package gguf
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // tensorInfo 是 GGUF 里的张量描述符（不含数据本身）。
 type tensorInfo struct {
@@ -67,61 +70,6 @@ func alignUp(off, align int64) int64 {
 	return off + (align - rem)
 }
 
-// blockBytes 是各类型「一个块」占用的字节数（含块头里的 scale / min）。
-// 非量化类型是单元素字节数。
-//
-// # 这些数字从哪来
-//
-// 由 llama.cpp 的 block_* 结构体定义逐字段相加得出（算式写在每条注释里）。
-//
-// # 验证到什么程度
-//
-// 有两道自动闸门，覆盖范围不同，不要混淆：
-//
-//   - TestTensorByteSize_覆盖全部类型码 —— 逐值钉住**全部 20 项**。
-//     但它的期望值是结构体算术的第三处抄写，三处一致地写错仍拦不住。
-//   - TestBlockTable_与真实文件吻合 —— 用真实文件的物理偏移交叉验证。
-//     这是唯一独立于本表的证据，但**只覆盖本地四个模型里出现的 7 项**
-//     （F32/F16/BF16/Q4_K/Q5_0/Q6_K/Q8_0）。其余 13 项没有任何本地文件覆盖。
-//
-// 独立复现路径：tools/verify_gguf_blocks.py
-//
-// 未列入的类型（IQ 系列）块结构复杂且未经本项目验证，
-// tensorByteSize 会明确报错，而不是给出可能错误的数字。
-var blockBytes = map[uint32]int64{
-	0:  4,   // F32
-	1:  2,   // F16
-	2:  18,  // Q4_0:  2 (d) + 16 (4bit × 32)
-	3:  20,  // Q4_1:  2 (d) + 2 (m) + 16
-	6:  22,  // Q5_0:  2 (d) + 4 (qh) + 16
-	7:  24,  // Q5_1:  2 (d) + 2 (m) + 4 (qh) + 16
-	8:  34,  // Q8_0:  2 (d) + 32 (int8 × 32)
-	9:  36,  // Q8_1:  2 (d) + 2 (s) + 32
-	10: 84,  // Q2_K:  16 (scales) + 64 (qs) + 2 (d) + 2 (dmin)
-	11: 110, // Q3_K:  32 (hmask) + 64 (qs) + 12 (scales) + 2 (d)
-	12: 144, // Q4_K:  2 (d) + 2 (dmin) + 12 (scales) + 128 (qs)
-	13: 176, // Q5_K:  2 (d) + 2 (dmin) + 12 (scales) + 32 (qh) + 128 (qs)
-	14: 210, // Q6_K:  128 (ql) + 64 (qh) + 16 (scales) + 2 (d)
-	15: 292, // Q8_K:  4 (d) + 256 (qs) + 32 (bsums)
-	24: 1,   // I8
-	25: 2,   // I16
-	26: 4,   // I32
-	27: 8,   // I64
-	28: 8,   // F64
-	30: 2,   // BF16
-}
-
-// blockElemCount 是各量化类型「一个块」包含的权重个数。
-func blockElemCount(t uint32) int64 {
-	switch t {
-	case 2, 3, 6, 7, 8, 9: // Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 Q8_1
-		return 32
-	case 10, 11, 12, 13, 14, 15: // Q2_K … Q8_K
-		return 256
-	}
-	return 1
-}
-
 // ErrUnknownBlockType 表示该 GGML 类型的块结构未收录，无法计算占用大小。
 type ErrUnknownBlockType struct{ Code uint32 }
 
@@ -133,27 +81,34 @@ func (e ErrUnknownBlockType) Error() string {
 //
 // 非量化类型 = 元素数 × 每元素字节数。
 // 量化类型 = 块数 × 每块字节数，且元素数必须是块大小的整数倍。
-func tensorByteSize(dims []int64, dtype uint32) (int64, error) {
+//
+// 块尺寸来自 model.Dtype —— 全项目唯一出处。这里保留 code→Dtype 的转换，
+// 是因为错误信息里要带上原始的 GGML 类型码，便于对着规范查。
+func tensorByteSize(dims []int64, code uint32) (int64, error) {
 	elems := int64(1)
 	for _, d := range dims {
 		if d < 0 {
 			return 0, fmt.Errorf("负的维度 %d", d)
 		}
+		if d != 0 && elems > math.MaxInt64/d {
+			return 0, fmt.Errorf("形状 %v 的元素总数超出 int64 上限", dims)
+		}
 		elems *= d
 	}
 
-	perBlock, ok := blockBytes[dtype]
+	dtype, known := ggmlDtype(code)
+	if !known {
+		return 0, ErrUnknownBlockType{Code: code}
+	}
+	perBlock, ok := dtype.BlockBytes()
 	if !ok {
-		return 0, ErrUnknownBlockType{Code: dtype}
+		return 0, ErrUnknownBlockType{Code: code}
 	}
-
-	blockElems := blockElemCount(dtype)
-	if blockElems == 1 {
-		return elems * perBlock, nil
+	if h := dtype.BlockElems(); h > 1 {
+		if elems%h != 0 {
+			return 0, fmt.Errorf("元素数 %d 不是块大小 %d 的整数倍", elems, h)
+		}
+		return (elems / h) * perBlock, nil
 	}
-
-	if elems%blockElems != 0 {
-		return 0, fmt.Errorf("元素数 %d 不是块大小 %d 的整数倍", elems, blockElems)
-	}
-	return (elems / blockElems) * perBlock, nil
+	return elems * perBlock, nil
 }

@@ -95,6 +95,16 @@ func minimalPkl() []byte { return minimalPklSpec("FloatStorage", "0") }
 
 // minimalPklSpec 与 minimalPkl 相同，但存储类名与存储块键可指定。
 func minimalPklSpec(storageCls, storageKey string) []byte {
+	return minimalPklStrided(storageCls, storageKey, []int64{2}, []int64{1})
+}
+
+// minimalPklStrided 与 minimalPklSpec 相同，但形状与步长可指定。
+//
+// 存在的理由：本地 2601 个真实 .pt 张量**全部是连续的**，
+// 非连续布局（转置、切片视图）一个都没有。造一个转置张量
+// （shape 2×2、stride 1,2）才能验证 NonContiguous 的接线是通的 ——
+// 否则把那个表达式的值写死成 false 也不会有测试发现。
+func minimalPklStrided(storageCls, storageKey string, shape, stride []int64) []byte {
 	p := newPB()
 	p.u8(opEMPTY_DICT).input(0) // 顶层 dict
 	p.u8(opMARK)
@@ -110,12 +120,24 @@ func minimalPklSpec(storageCls, storageKey string) []byte {
 	p.global("torch", storageCls)
 	p.str(storageKey)
 	p.str("cpu")
-	p.u8(opBININT1).u8(2) // numel = 2
+	numel := int64(1)
+	for _, d := range shape {
+		numel *= d
+	}
+	p.u8(opBININT1).u8(uint8(numel))
 	p.u8(opTUPLE).input(5)
-	p.u8(opBINPERSID).input(6)                            // storage
-	p.u8(opBININT1).u8(0)                                 // storage_offset
-	p.u8(opMARK).u8(opBININT1).u8(2).u8(opTUPLE).input(7) // size (2,)
-	p.u8(opMARK).u8(opBININT1).u8(1).u8(opTUPLE)          // stride (1,)
+	p.u8(opBINPERSID).input(6) // storage
+	p.u8(opBININT1).u8(0)      // storage_offset
+	p.u8(opMARK)
+	for _, d := range shape {
+		p.u8(opBININT1).u8(uint8(d))
+	}
+	p.u8(opTUPLE).input(7) // size
+	p.u8(opMARK)
+	for _, d := range stride {
+		p.u8(opBININT1).u8(uint8(d))
+	}
+	p.u8(opTUPLE) // stride
 	p.u8(opNEWFALSE)
 	p.global("collections", "OrderedDict").u8(opEMPTY_TUPLE).u8(opREDUCE)
 	p.u8(opTUPLE)    // args 元组
@@ -302,5 +324,89 @@ func TestParse_存储块缺失告警(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("告警应指出缺失的 data/9，实际: %v", m.Warnings)
+	}
+}
+
+// .pt 必须记录归档前缀 —— 读张量数据要靠它拼出 <前缀>/data/<键>。
+// 前缀不是固定的：实测 best-500k.pt 的前缀是 ln-c2-a0-500k。
+func TestParse_记录归档前缀(t *testing.T) {
+	for _, prefix := range []string{"model", "ln-c2-a0-500k", "任意中文前缀"} {
+		t.Run(prefix, func(t *testing.T) {
+			m, err := Parse(write(t, "x.pt", buildPT(t, prefix)))
+			if err != nil {
+				t.Fatalf("Parse 失败: %v", err)
+			}
+			if m.ArchivePrefix != prefix {
+				t.Errorf("ArchivePrefix = %q, want %q", m.ArchivePrefix, prefix)
+			}
+		})
+	}
+}
+
+// 连续布局的张量不能标成 NonContiguous —— 标错会让 analyze 白白拒绝统计。
+func TestParse_连续张量不标记(t *testing.T) {
+	m, err := Parse(write(t, "x.pt", buildPT(t, "model")))
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	for _, tn := range m.Tensors {
+		if tn.NonContiguous {
+			t.Errorf("张量 %s 被标为非连续，但 stride 是连续的", tn.Name)
+		}
+	}
+}
+
+// 真实文件同样：本地 2601 个张量全是连续的。
+func TestParse_真实PT_都是连续张量(t *testing.T) {
+	p := requireArtifact(t, "releases/v0.1/model.pt")
+	m, err := Parse(p)
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if m.ArchivePrefix != "model" {
+		t.Errorf("ArchivePrefix = %q, want model", m.ArchivePrefix)
+	}
+	for _, tn := range m.Tensors {
+		if tn.NonContiguous {
+			t.Errorf("张量 %s 标为非连续，但实测本地文件全是连续的", tn.Name)
+		}
+	}
+}
+
+// 非连续布局（转置）必须被标记出来。
+//
+// 转置张量的字节数与形状都对，但元素在存储块里不是线性排列的 ——
+// analyze 按线性顺序解码会得到顺序错乱但看着正常的分布，
+// 所以必须能在解析阶段识别出来。
+func TestParse_非连续张量被标记(t *testing.T) {
+	// shape 2×2、stride (1,2)：这是转置，不是连续布局
+	pkl := minimalPklStrided("FloatStorage", "0", []int64{2, 2}, []int64{1, 2})
+	m, err := Parse(write(t, "x.pt", buildPTWith(t, "model", "little", pkl)))
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if len(m.Tensors) != 1 {
+		t.Fatalf("张量数 = %d, want 1", len(m.Tensors))
+	}
+	tn := m.Tensors[0]
+	if !tn.NonContiguous {
+		t.Errorf("转置张量（shape=%v stride=%v）应标为 NonContiguous",
+			tn.Dims, []int64{1, 2})
+	}
+	// 形状与元素数仍是正确的 —— 非连续只影响元素顺序，不影响大小
+	if tn.ParamCount != 4 {
+		t.Errorf("ParamCount = %d, want 4", tn.ParamCount)
+	}
+}
+
+// 对照组：连续的二维张量不该被标记。
+func TestParse_连续二维张量不标记(t *testing.T) {
+	pkl := minimalPklStrided("FloatStorage", "0", []int64{2, 2}, []int64{2, 1})
+	m, err := Parse(write(t, "x.pt", buildPTWith(t, "model", "little", pkl)))
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if m.Tensors[0].NonContiguous {
+		t.Errorf("shape=[2 2] stride=[2 1] 是连续布局，不该被标记")
 	}
 }

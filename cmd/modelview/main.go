@@ -4,14 +4,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/sillydong/modelview/internal/analyze"
 	"github.com/sillydong/modelview/internal/model"
 	"github.com/sillydong/modelview/internal/parser"
 )
@@ -27,6 +30,12 @@ func run() error {
 	var (
 		asJSON  = flag.Bool("json", false, "以 JSON 输出（非交互）")
 		version = flag.Bool("version", false, "打印版本后退出")
+		asStats = flag.Bool("stats", false, "计算张量数值统计（慢，会读全部张量数据）")
+		noCache = flag.Bool("no-cache", false, "禁用缓存读写")
+		// 0 表示不采样（读完整个张量）；默认 1e7 个元素约 40 MB
+		sampleLimit = flag.Int("sample-limit", analyze.DefaultSampleLimit,
+			"单张量统计的采样上限（元素数），0 表示不采样（会读完整个张量，"+
+				"大模型上峰值内存可达数 GB）")
 	)
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, "用法: modelview [选项] <模型文件>\n\n")
@@ -49,22 +58,64 @@ func run() error {
 		return err
 	}
 
+	if *asStats {
+		if err := runStats(m, *sampleLimit, *noCache); err != nil {
+			return err
+		}
+	}
+
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(m); err != nil {
+		// 匿名嵌入 Model 会把它的字段全部提升到顶层，再加一个 param_count，
+		// 而不用给 Model 加一个会和 TotalParams() 漂移的字段。
+		out := struct {
+			*model.Model
+			ParamCount int64 `json:"param_count"`
+		}{m, m.TotalParams()}
+		if err := enc.Encode(out); err != nil {
 			return fmt.Errorf("序列化 JSON: %w", err)
 		}
 		return nil
 	}
 
-	printSummary(m)
+	printSummary(m, *asStats)
+	return nil
+}
+
+// runStats 计算统计并把失败的张量报到 stderr。
+//
+// 失败不中断：解析或解码某个张量出错时，其余张量照常显示，
+// 这里只负责把失败清单说清楚 —— 静默少几个张量的统计比报错更糟。
+func runStats(m *model.Model, sampleLimit int, noCache bool) error {
+	limit := sampleLimit
+	if limit == 0 {
+		limit = -1 // 0 表示不采样
+	}
+	errs, err := analyze.Analyze(context.Background(), m, analyze.Options{
+		SampleLimit: limit,
+		NoCache:     noCache,
+	})
+	if err != nil {
+		return fmt.Errorf("统计: %w", err)
+	}
+	if len(errs) > 0 {
+		fmt.Fprintf(os.Stderr, "modelview: %d 个张量统计失败\n", len(errs))
+		names := make([]string, 0, len(errs))
+		for name := range errs {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			fmt.Fprintf(os.Stderr, "  %s: %v\n", name, errs[name])
+		}
+	}
 	return nil
 }
 
 // printSummary 打印人类可读的摘要。
 // 元数据与张量全部列出，不做过滤。
-func printSummary(m *model.Model) {
+func printSummary(m *model.Model, withStats bool) {
 	fmt.Printf("文件     %s\n", m.Path)
 	fmt.Printf("格式     %s %s\n", m.Format, m.Version)
 	fmt.Printf("大小     %s\n", humanBytes(m.FileSize))
@@ -74,6 +125,22 @@ func printSummary(m *model.Model) {
 	// 精确值 + SI 前缀缩写。刻意不用 "B" ——
 	// 上一行的 GiB 已经让读者把 B 理解成字节，3.086 B 会被读成"3 个字节"。
 	fmt.Printf("总参数   %s（%s）\n", humanCount(m.TotalParams()), commaInt(m.TotalParams()))
+
+	if withStats {
+		ok, failed := 0, 0
+		for _, t := range m.Tensors {
+			if t.Stats != nil {
+				ok++
+			} else {
+				failed++
+			}
+		}
+		fmt.Printf("统计     %d 个张量已统计", ok)
+		if failed > 0 {
+			fmt.Printf("，%d 个失败", failed)
+		}
+		fmt.Println()
+	}
 
 	if m.Alignment > 0 {
 		fmt.Printf("对齐     %d 字节（数据区起点 %d）\n", m.Alignment, m.DataStart)
@@ -126,9 +193,72 @@ func printSummary(m *model.Model) {
 
 	fmt.Printf("\n张量（全部 %d 个）\n", len(m.Tensors))
 	for _, t := range m.Tensors {
+		if withStats && t.Stats != nil {
+			fmt.Printf("  %-56s %-20s %-8s %12s  %s\n",
+				t.Name, dimsString(t.Dims), t.Dtype, humanBytes(t.ByteSize),
+				statsString(t.Stats))
+			continue
+		}
 		fmt.Printf("  %-56s %-20s %-8s %12s\n",
 			t.Name, dimsString(t.Dims), t.Dtype, humanBytes(t.ByteSize))
 	}
+}
+
+// statsString 把统计压成一行。
+//
+// 采样过的数字前面加 ≈ —— 把样本统计量当成全量是误导，
+// 而一行里没地方写"这是采样值"。
+func statsString(s *model.Stats) string {
+	mark := ""
+	if s.Sampled {
+		mark = "≈"
+	}
+	out := fmt.Sprintf("%s[%s, %s] μ=%s σ=%s 零=%s 离群=%s",
+		mark, humanFloat(s.Min), humanFloat(s.Max),
+		humanFloat(s.Mean), humanFloat(s.Std),
+		humanRatio(s.ZeroRatio), humanRatio(s.OutlierRatio))
+
+	// 非有限值必须显示出来。
+	//
+	// 它们只被计数、不参与统计，所以一个**全是 NaN** 的张量
+	// Min/Max/Mean/Std 全是零值，看起来跟真正的零张量一模一样。
+	// 正是 model.Stats 注释里点名要避免的那种误导，只是换了个形式。
+	if s.NaN > 0 || s.Inf > 0 {
+		out += fmt.Sprintf(" ⚠NaN=%d Inf=%d", s.NaN, s.Inf)
+	}
+	return out
+}
+
+// humanFloat 用 4 位有效数字打印统计量。
+//
+// 权重的动态范围常常横跨好几个数量级（1e-5 到 1e-1），
+// 定点格式会让小值全变成 0.0000。
+func humanFloat(v float64) string {
+	switch {
+	case v == 0:
+		return "0"
+	case math.IsNaN(v):
+		return "NaN"
+	case math.IsInf(v, 1):
+		return "+Inf"
+	case math.IsInf(v, -1):
+		return "-Inf"
+	}
+	if a := math.Abs(v); a >= 1e-3 && a < 1e5 {
+		return strconv.FormatFloat(v, 'f', 4, 64)
+	}
+	return strconv.FormatFloat(v, 'g', 4, 64)
+}
+
+// humanRatio 把 0..1 的比例打成百分数。
+func humanRatio(v float64) string {
+	if v == 0 {
+		return "0"
+	}
+	if v < 0.0001 {
+		return fmt.Sprintf("%.2g%%", v*100)
+	}
+	return fmt.Sprintf("%.2f%%", v*100)
 }
 
 func dimsString(dims []int64) string {

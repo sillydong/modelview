@@ -27,7 +27,10 @@ type MetaKV struct {
 	Ref   string `json:"ref,omitempty"` // 关联的速查表条目 ID，空表示无
 }
 
-// QuantInfo 描述一个已量化张量的块结构，由 analyze 包填充；解析阶段为 nil。
+// QuantInfo 描述一个已量化张量的块结构。
+//
+// **目前没有任何代码填它**，解析阶段恒为 nil —— 预留给计划③b 的
+// 块级诊断（块间 scale 分布、动态范围最差的块）。
 type QuantInfo struct {
 	BlockSize int     `json:"block_size"`
 	NumBlocks int64   `json:"num_blocks"`
@@ -67,7 +70,55 @@ type Tensor struct {
 	// 单独一个字段是必要的：否则 ByteSize==0 会被读成"这个张量真的是 0 字节"。
 	SizeUnknown bool `json:"size_unknown,omitempty"`
 
+	// NonContiguous 表示张量的数据在存储块里不是线性排列的
+	//（转置、切片视图）。只有 PyTorch 会产生这种张量。
+	//
+	// 单独一个字段是因为它不是"异常"而是"读法不同"：解码器按线性顺序
+	// 读会得到元素顺序错乱的数据，统计结果看着正常但全是错的。
+	// analyze 遇到这类张量必须明确拒绝，不能给一个看似合理的分布。
+	NonContiguous bool `json:"non_contiguous,omitempty"`
+
+	// Stats 是张量数值的统计结果，由 analyze 包懒加载填充；nil 表示未扫描。
+	Stats *Stats `json:"stats,omitempty"`
+
 	Quant *QuantInfo `json:"quant,omitempty"`
+}
+
+// Stats 是一个张量数值的统计结果。
+//
+// 全部字段都基于**采样后**的那批值计算 —— Sampled 为 true 时，
+// 下面的数字是样本的统计量，不是全量的。界面必须把这一点显示出来，
+// 否则用户会把采样值当成精确值。
+//
+// NaN 与 Inf 只计数，不参与 Min/Max/Mean/Std —— 让它们参与的话
+// 整条统计会变成 NaN，而界面上看起来只是"有点怪"。
+type Stats struct {
+	Count int64   `json:"count"` // 参与统计的元素个数（采样时小于参数总量）
+	Min   float64 `json:"min"`
+	Max   float64 `json:"max"`
+	Mean  float64 `json:"mean"`
+	Std   float64 `json:"std"`
+
+	NaN int64 `json:"nan"`
+	Inf int64 `json:"inf"`
+
+	// ZeroRatio 是精确等于 0 的比例；OutlierRatio 是超出 mean±3σ 的比例。
+	// 两者的分母都是参与统计的**有效值**个数（不含 NaN/Inf）。
+	ZeroRatio    float64 `json:"zero_ratio"`
+	OutlierRatio float64 `json:"outlier_ratio"`
+
+	// Histogram 是 64 个等宽桶的计数，覆盖区间 [Min, Max]。
+	//
+	// 不再单独存直方图区间：原先的 HistMin/HistMax 在所有路径上都
+	// 恒等于 Min/Max（fillHistogram 就是直接赋值），而注释给的理由
+	// ——"Min/Max 会被 NaN 影响"——是错的：NaN/Inf 已经被排除在
+	// Min/Max 之外了。同一个区间被两个字段表达，其中一个是冗余的。
+	//
+	// 全部值都是 NaN/Inf 时直方图为空（区间无意义）。
+	Histogram []int64 `json:"histogram"`
+
+	// Sampled 为 true 时上面的数字来自等距采样，不是全量。
+	Sampled bool `json:"sampled"`
 }
 
 // Model 是一个已解析的模型文件。
@@ -105,6 +156,13 @@ type Model struct {
 	// TiedGroups 记录共享同一存储块的张量名分组，每组按名称排序。
 	// 只有真正的共享（组内 ≥2 个张量）才会列在这里。
 	TiedGroups [][]string `json:"tied_groups,omitempty"`
+
+	// ArchivePrefix 是归档格式里数据块的路径前缀，只有 PyTorch 会填。
+	//
+	// 张量数据在 <ArchivePrefix>/data/<Tensor.StorageKey> 这个 ZIP 条目里，
+	// 条目的绝对偏移拿不到（archive/zip 不暴露本地文件头位置），
+	// 所以要读数据必须重新打开归档并拼出这个路径。
+	ArchivePrefix string `json:"archive_prefix,omitempty"`
 
 	// Warnings 记录解析过程中被降级处理、但用户应当知道的问题。
 	// 例如未收录的量化类型导致占用大小算不出来。

@@ -65,6 +65,10 @@ func Parse(path string) (*model.Model, error) {
 		Tensors:  make([]*model.Tensor, 0, len(recs)),
 		// DataStart 留 0：ZIP 容器没有单一的数据区起点，
 		// 按 model.Model 的约定 0 即表示"该格式无此概念"。
+		//
+		// 读张量数据时要靠它拼出 <前缀>/data/<StorageKey>，
+		// 所以必须留到 Model 上，不能解析完就丢。
+		ArchivePrefix: lay.Prefix,
 	}
 
 	storageBytes := map[string]int64{}
@@ -99,6 +103,7 @@ func Parse(path string) (*model.Model, error) {
 				StorageOffset: rec.StorageOffset,
 				OffsetUnknown: true,
 				SizeUnknown:   true,
+				NonContiguous: !isContiguous(rec.Shape, rec.Stride),
 			})
 			continue
 		}
@@ -116,10 +121,6 @@ func Parse(path string) (*model.Model, error) {
 		}
 		size := n * eb
 
-		if !isContiguous(rec.Shape, rec.Stride) {
-			warnings = append(warnings, fmt.Sprintf(
-				"张量 %s 非连续布局（stride=%v），其字节数按逻辑形状计算", rec.Name, rec.Stride))
-		}
 		if end := rec.StorageOffset + n; end > rec.StorageNumel {
 			warnings = append(warnings, fmt.Sprintf(
 				"张量 %s 的数据越出存储块：offset %d + %d 元素 > 存储块 %d 元素",
@@ -137,6 +138,10 @@ func Parse(path string) (*model.Model, error) {
 			StorageKey:    rec.StorageKey,
 			StorageOffset: rec.StorageOffset,
 			OffsetUnknown: true,
+			// 非连续布局的字节数仍按逻辑形状算（大小是对的），
+			// 但**元素顺序**不是线性的 —— analyze 会据此拒绝统计。
+			// 原先这里只发一条告警，现在由字段表达，避免同一件事两份说法。
+			NonContiguous: !isContiguous(rec.Shape, rec.Stride),
 		})
 	}
 

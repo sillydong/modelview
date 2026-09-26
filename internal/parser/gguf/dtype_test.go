@@ -58,56 +58,35 @@ func TestBlockTable_声明位宽的类型必须在块表(t *testing.T) {
 		if dt.BitsPerWeight() == 0 {
 			continue // IQ 系列故意不声明位宽
 		}
-		if _, ok := blockBytes[code]; !ok {
-			t.Errorf("类型码 %d（%s）声明了位宽 %.4f，却不在块表里 —— "+
+		if _, ok := dt.BlockBytes(); !ok {
+			t.Errorf("类型码 %d（%s）声明了位宽 %.4f，却取不到块字节数 —— "+
 				"该类型的张量将无法计算占用大小",
 				code, dt, dt.BitsPerWeight())
 		}
 	}
 }
 
-// 反向闸门之二：块表里的每个码都必须是已知类型码。
-func TestBlockTable_块表里的码都已知(t *testing.T) {
-	for code := range blockBytes {
-		if _, ok := ggmlTypeCode[code]; !ok {
-			t.Errorf("类型码 %d 在块表里但不在类型码表里", code)
-		}
-	}
-}
-
-// 块表与位宽表必须自洽：由块字节数推出的位宽应等于 model 表里声明的位宽。
-// 两张表分处两个包，这条测试是它们之间唯一的防漂移闸门。
-func TestBlockTable_与位宽表自洽(t *testing.T) {
-	for code, size := range blockBytes {
-		dt, ok := ggmlDtype(code)
-		if !ok {
-			t.Errorf("类型码 %d 在块表里但不在类型码表里", code)
-			continue
-		}
-		elems := blockElemCount(code)
-		derived := float64(size) * 8 / float64(elems)
-		declared := dt.BitsPerWeight()
-		if declared == 0 {
-			// IQ 系列故意不声明位宽，跳过。
-			continue
-		}
-		if diff := derived - declared; diff > 1e-9 || diff < -1e-9 {
-			t.Errorf("%s（码 %d）：块表推出 %.4f bits/weight，位宽表声明 %.4f",
-				dt, code, derived, declared)
-		}
-	}
-}
-
-// 未声明位宽的类型（IQ 系列）必须也不在块表里 —— 否则算出的占用大小会与展示的位宽矛盾。
-func TestBlockTable_未声明位宽的类型不在块表(t *testing.T) {
+// 反向闸门之二：未声明位宽的类型（IQ 系列）必须也取不到块字节数 ——
+// 否则算出的占用大小会与展示的位宽矛盾。
+func TestBlockTable_未声明位宽的类型取不到块字节(t *testing.T) {
 	for code, dt := range ggmlTypeCode {
-		if dt.BitsPerWeight() == 0 {
-			if _, inBlock := blockBytes[code]; inBlock {
-				t.Errorf("%s（码 %d）未声明位宽，却在块表里", dt, code)
-			}
+		if dt.BitsPerWeight() != 0 {
+			continue
+		}
+		if _, ok := dt.BlockBytes(); ok {
+			t.Errorf("%s（码 %d）未声明位宽，却取到了块字节数", dt, code)
 		}
 	}
 }
+
+// 原先这里还有两条门禁，块表迁到 model.Dtype 之后它们成了同义反复
+// （块表与位宽表本就是同一张表），已删：
+//
+//   - 「块表里的每个码都必须是已知类型码」：现在 BlockBytes 由 Dtype 自己给出，
+//     不存在"码认识但块表不认识"的组合了。
+//   - 「块表与位宽表自洽」：同一张表，恒等成立。等价的检查搬到了
+//     model 的 TestBlockBytes_量化位宽自洽 —— 那里仍然能抓到
+//     "改了字节数忘了改位宽"（或反过来）。
 
 func TestFormatValue(t *testing.T) {
 	tests := []struct {

@@ -162,7 +162,7 @@ func TestTensorByteSize(t *testing.T) {
 // 覆盖块表里的**每一个**类型码。
 //
 // 期望值独立于实现：直接来自 llama.cpp 的 block_* 结构体定义，算式写在注释里。
-// 不从 blockBytes 反算 —— 否则就是同义反复，表写错了测试跟着一起错。
+// 不从块表反算 —— 否则就是同义反复，表写错了测试跟着一起错。
 //
 // 注意：下面这张表的存在意义是"换台机器也能验证"。真实文件回归测试
 // 依赖 ~/.ollama 目录，在 CI 或别人机器上会整个 SKIP。
@@ -236,10 +236,20 @@ func TestTensorByteSize_覆盖全部类型码(t *testing.T) {
 		}
 	}
 
-	// 这张表必须覆盖块表的全部条目 —— 新增类型时同步补进来。
-	if len(tests) != len(blockBytes) {
-		t.Errorf("本表覆盖 %d 个类型，块表有 %d 个 —— 有类型没被验证到",
-			len(tests), len(blockBytes))
+	// 这张表必须覆盖所有能算出占用大小的类型码 —— 新增类型时同步补进来。
+	blocky := 0
+	for code := range ggmlTypeCode {
+		dt, ok := ggmlDtype(code)
+		if !ok {
+			continue
+		}
+		if _, has := dt.BlockBytes(); has {
+			blocky++
+		}
+	}
+	if len(tests) != blocky {
+		t.Errorf("本表覆盖 %d 个类型，有块结构的类型码有 %d 个 —— 有类型没被验证到",
+			len(tests), blocky)
 	}
 
 	// want 按元素数算出期望字节数。
@@ -398,4 +408,28 @@ func findBlob(prefix string) string {
 		}
 	}
 	return ""
+}
+
+// 形状连乘溢出必须报错，不能回绕成负数或 0。
+//
+// 回绕的后果不是"报错"而是"静默继续"：ByteSize 变成垃圾值，
+// 进而算出负偏移或错误的统计。这条守卫是本分支新增的，
+// 加的时候没有配套测试 —— 把它改成永远为假，整个包不会有测试变红。
+func TestTensorByteSize_形状溢出报错(t *testing.T) {
+	// 2^32 × 2^32 = 2^64，超出 int64
+	if _, err := tensorByteSize([]int64{1 << 32, 1 << 32}, 0); err == nil {
+		t.Error("2^64 个元素应报溢出")
+	}
+	// 三维也拦得住
+	if _, err := tensorByteSize([]int64{1 << 21, 1 << 21, 1 << 21}, 0); err == nil {
+		t.Error("2^63 个元素应报溢出")
+	}
+	// 边界之内不能误报：2^60 个 F32 = 2^62 字节，仍在 int64 内
+	if _, err := tensorByteSize([]int64{1 << 20, 1 << 20, 1 << 20}, 0); err != nil {
+		t.Errorf("2^60 个元素不该报错: %v", err)
+	}
+	// 含 0 维度是合法的（空张量），不能因为除零判成溢出
+	if n, err := tensorByteSize([]int64{0, 5}, 0); err != nil || n != 0 {
+		t.Errorf("含 0 维度：n=%d err=%v", n, err)
+	}
 }

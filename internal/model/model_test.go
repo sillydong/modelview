@@ -80,3 +80,35 @@ func TestStorageBytes与TensorBytes可不同(t *testing.T) {
 			unique, m.TensorBytes())
 	}
 }
+
+// NonContiguous 与 OffsetUnknown 是两个独立的事实，不能互相顶替：
+// 前者说「数据不是线性排的」，后者说「不知道数据在哪」。
+func TestTensor_两个标记互相独立(t *testing.T) {
+	tn := &Tensor{Name: "t", NonContiguous: true, OffsetUnknown: true}
+	if !tn.NonContiguous || !tn.OffsetUnknown {
+		t.Error("两个字段应能同时为 true")
+	}
+}
+
+// Stats 必须能表达「采样过」—— 把样本统计量当成全量是误导。
+func TestStats_采样标记与直方图(t *testing.T) {
+	s := &Stats{Count: 100, Sampled: true, Histogram: make([]int64, 64)}
+	if !s.Sampled {
+		t.Error("Sampled 应为 true")
+	}
+	if len(s.Histogram) != 64 {
+		t.Errorf("直方图应为 64 桶，实际 %d", len(s.Histogram))
+	}
+}
+
+// 归档前缀只有 PyTorch 会填，其它格式保持空串。
+func TestModel_归档前缀(t *testing.T) {
+	m := &Model{Format: FormatGGUF}
+	if m.ArchivePrefix != "" {
+		t.Errorf("GGUF 不该有归档前缀，实际 %q", m.ArchivePrefix)
+	}
+	p := &Model{Format: FormatPyTorch, ArchivePrefix: "model"}
+	if p.ArchivePrefix != "model" {
+		t.Errorf("ArchivePrefix = %q", p.ArchivePrefix)
+	}
+}
