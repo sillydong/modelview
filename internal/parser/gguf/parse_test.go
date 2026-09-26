@@ -15,10 +15,11 @@ import (
 // 3 条元数据（含 alignment）+ 1 个 F32 张量 + 数据区。
 func buildMinimalGGUF() []byte {
 	b := newBuilder()
-	b.header(3, 1, 3)
+	b.header(3, 1, 4)
 	b.kv("general.architecture", typeString).str("test-arch")
 	b.kv("general.alignment", typeUint32).u32(32)
 	b.kv("t.vec", typeArray).u32(typeUint32).u64(3).u32(1).u32(2).u32(3)
+	b.kv("t.strs", typeArray).u32(typeString).u64(2).str("aa").str("bb")
 
 	// 张量描述符：形状 [4]，F32，偏移 0
 	b.str("w")
@@ -63,14 +64,32 @@ func TestParse_最小文件(t *testing.T) {
 	if m.Arch != "test-arch" {
 		t.Errorf("Arch = %q, want test-arch", m.Arch)
 	}
-	if len(m.Metadata) != 3 {
-		t.Fatalf("元数据条数 = %d, want 3", len(m.Metadata))
+	if len(m.Metadata) != 4 {
+		t.Fatalf("元数据条数 = %d, want 4", len(m.Metadata))
+	}
+	// 字符串数组的 Raw 分支
+	strs, ok := m.Metadata[3].Raw.([]string)
+	if !ok {
+		t.Fatalf("metadata[3].Raw 类型 = %T, want []string", m.Metadata[3].Raw)
+	}
+	if len(strs) != 2 || strs[0] != "aa" || strs[1] != "bb" {
+		t.Errorf("metadata[3].Raw = %v, want [aa bb]", strs)
 	}
 	if m.Metadata[0].Key != "general.architecture" || m.Metadata[0].Value != "test-arch" {
 		t.Errorf("metadata[0] = %+v", m.Metadata[0])
 	}
 	if m.Metadata[2].Value != "[1, 2, 3]" {
 		t.Errorf("metadata[2].Value = %q, want [1, 2, 3]", m.Metadata[2].Value)
+	}
+	// Raw 是 JSON 输出里唯一程序可消费的字段，必须保留完整原始值。
+	// 数值数组与字符串数组两条分支都要覆盖 —— 只测一条的话，
+	// 把另一条改成返回 nil 不会有任何测试失败。
+	raw, ok := m.Metadata[2].Raw.([]any)
+	if !ok {
+		t.Fatalf("metadata[2].Raw 类型 = %T, want []any", m.Metadata[2].Raw)
+	}
+	if len(raw) != 3 || raw[0] != uint32(1) || raw[2] != uint32(3) {
+		t.Errorf("metadata[2].Raw = %v, want [1 2 3]", raw)
 	}
 
 	if len(m.Tensors) != 1 {
@@ -155,8 +174,14 @@ func TestParse_自定义对齐(t *testing.T) {
 
 func TestParse_非GGUF报错(t *testing.T) {
 	p := writeFile(t, "not.gguf", []byte("NOPE12345678"))
-	if _, err := Parse(p); err == nil {
+	_, err := Parse(p)
+	if err == nil {
 		t.Fatal("非 GGUF 文件应报错")
+	}
+	// 必须断言错误来自 magic 检查。只断言 err != nil 的话，
+	// 删掉 magic 检查后版本检查会接管报错，测试照样绿。
+	if !strings.Contains(err.Error(), "magic") {
+		t.Fatalf("err = %v, 期望提到 magic（说明 magic 检查被绕过）", err)
 	}
 }
 
@@ -232,6 +257,62 @@ func TestParse_alignment异常告警(t *testing.T) {
 				t.Errorf("应产生 alignment 告警，实际告警: %v", m.Warnings)
 			}
 		})
+	}
+}
+
+// 未知的 GGML 类型码必须同时产生告警、标注未知类型、且 size 不可信。
+func TestParse_未知类型码产生告警(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 1, 0)
+	b.str("weird_tensor")
+	b.u32(1)
+	b.u64(256)
+	b.u32(999) // ggmlTypeCode 里没有这个码
+	b.u64(0)
+	b.raw(make([]byte, alignUp(int64(len(b.bytes())), 32)-int64(len(b.bytes()))))
+
+	m, err := Parse(writeFile(t, "weird.gguf", b.bytes()))
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if m.Tensors[0].Dtype != model.DtypeUnknown {
+		t.Errorf("Dtype = %q, want %q", m.Tensors[0].Dtype, model.DtypeUnknown)
+	}
+	if !m.Tensors[0].SizeUnknown {
+		t.Error("SizeUnknown 应为 true")
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "999") && strings.Contains(w, "weird_tensor") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("应有指明张量名与类型码的告警，实际: %v", m.Warnings)
+	}
+}
+
+// DataStart 必须与 HeaderBytes / Alignment 自洽。
+//
+// 这是对数据区起点的**独立**断言：其它测试用 m.Tensors[0].Offset 当基准，
+// 那是解析器自己的输出，整体平移时两边一起动，看不出来。
+func TestParse_DataStart自洽(t *testing.T) {
+	m, err := Parse(writeFile(t, "min.gguf", buildMinimalGGUF()))
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if m.DataStart < m.HeaderBytes {
+		t.Errorf("DataStart(%d) 小于 HeaderBytes(%d)", m.DataStart, m.HeaderBytes)
+	}
+	if m.Alignment <= 0 {
+		t.Fatalf("Alignment = %d", m.Alignment)
+	}
+	if m.DataStart%m.Alignment != 0 {
+		t.Errorf("DataStart(%d) 未按 Alignment(%d) 对齐", m.DataStart, m.Alignment)
+	}
+	// 填充量必须小于一个对齐单位 —— 多出整块说明对齐算错了
+	if pad := m.DataStart - m.HeaderBytes; pad >= m.Alignment {
+		t.Errorf("填充 %d 字节 ≥ 对齐单位 %d", pad, m.Alignment)
 	}
 }
 

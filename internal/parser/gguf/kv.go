@@ -13,6 +13,12 @@ import (
 // 两者的含义完全不同，前者是防御性拒绝，后者是文件损坏。
 var ErrTooManyEntries = errors.New("条目数超过上限")
 
+// ErrTooManyDims 表示张量维数超过 maxDims。
+//
+// 与 ErrTooManyEntries 同理：没有它的话，测试只能断言"有错误"，
+// 而把守卫改成永假之后，错误会改由"读到第 3 维时 EOF"产生 —— 测试照样通过。
+var ErrTooManyDims = errors.New("张量维数超过上限")
+
 // GGUF 元数据值类型码。
 //
 // 注意 typeBool = 7 只占 1 字节，容易在类型分派里被漏掉；

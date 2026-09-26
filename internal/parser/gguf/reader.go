@@ -15,6 +15,7 @@ package gguf
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -123,6 +124,12 @@ func (r *reader) f64() (float64, error) {
 	return math.Float64frombits(v), err
 }
 
+// ErrStringTooLong 表示字符串声称的长度超过 maxStringLen。
+//
+// 同样是"可识别错误"：否则测试只能钉住"存在一个 ≤ 1 TiB 的阈值"，
+// 钉不住这个阈值具体是 64 MiB。
+var ErrStringTooLong = errors.New("字符串长度超过上限")
+
 // maxStringLen 是单个字符串的长度上限（64 MiB）。
 // 用于在文件损坏导致指针错位时尽早失败，而不是尝试分配巨大内存。
 const maxStringLen = 64 << 20
@@ -134,8 +141,8 @@ func (r *reader) str() (string, error) {
 		return "", err
 	}
 	if n > maxStringLen {
-		return "", fmt.Errorf("偏移 %d 处字符串长度 %d 超出上限 %d（文件可能损坏）",
-			r.off, n, maxStringLen)
+		return "", fmt.Errorf("偏移 %d 处字符串长度 %d: %w（上限 %d）",
+			r.off, n, ErrStringTooLong, maxStringLen)
 	}
 	if n == 0 {
 		return "", nil

@@ -29,7 +29,7 @@ func readTensorInfos(r *reader, n uint64) ([]tensorInfo, error) {
 			return nil, fmt.Errorf("张量 %q 的维数: %w", name, err)
 		}
 		if nd > maxDims {
-			return nil, fmt.Errorf("张量 %q 维数 %d 超出上限 %d", name, nd, maxDims)
+			return nil, fmt.Errorf("张量 %q 维数 %d: %w（上限 %d）", name, nd, ErrTooManyDims, maxDims)
 		}
 		dims := make([]int64, nd)
 		for d := range dims {
@@ -68,11 +68,24 @@ func alignUp(off, align int64) int64 {
 }
 
 // blockBytes 是各类型「一个块」占用的字节数（含块头里的 scale / min）。
-//
 // 非量化类型是单元素字节数。
 //
-// 表中数值经四个真实 GGUF 文件反推验证：按此表累加所有张量的字节数，
-// 最后一个张量的结束位置恰好等于文件大小（差值 0 字节）。
+// # 这些数字从哪来
+//
+// 由 llama.cpp 的 block_* 结构体定义逐字段相加得出（算式写在每条注释里）。
+//
+// # 验证到什么程度
+//
+// 有两道自动闸门，覆盖范围不同，不要混淆：
+//
+//   - TestTensorByteSize_覆盖全部类型码 —— 逐值钉住**全部 20 项**。
+//     但它的期望值是结构体算术的第三处抄写，三处一致地写错仍拦不住。
+//   - TestBlockTable_与真实文件吻合 —— 用真实文件的物理偏移交叉验证。
+//     这是唯一独立于本表的证据，但**只覆盖本地四个模型里出现的 7 项**
+//     （F32/F16/BF16/Q4_K/Q5_0/Q6_K/Q8_0）。其余 13 项没有任何本地文件覆盖。
+//
+// 独立复现路径：tools/verify_gguf_blocks.py
+//
 // 未列入的类型（IQ 系列）块结构复杂且未经本项目验证，
 // tensorByteSize 会明确报错，而不是给出可能错误的数字。
 var blockBytes = map[uint32]int64{

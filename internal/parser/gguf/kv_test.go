@@ -239,8 +239,25 @@ func TestReadKVs_超长字符串报错(t *testing.T) {
 
 	r := newReader(bytes.NewReader(b.bytes()))
 	mustSkipHeader(t, r)
-	if _, err := readKVs(r, 1); err == nil {
-		t.Fatal("超长字符串应报错，实际为 nil")
+	_, err := readKVs(r, 1)
+	// 断言具体哨兵：只断言 err != nil 的话，把阈值从 64 MiB 改成 128 MiB
+	// 测试照样通过 —— 它只钉住了"存在某个 ≤ 1 TiB 的阈值"。
+	if !errors.Is(err, ErrStringTooLong) {
+		t.Fatalf("err = %v, 期望 ErrStringTooLong", err)
+	}
+}
+
+// 阈值本身必须被钉住：稍微超一点也要拒绝。
+func TestReadKVs_字符串阈值精确(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 0, 1)
+	b.kv("just_over", typeString).u64(maxStringLen + 1)
+
+	r := newReader(bytes.NewReader(b.bytes()))
+	mustSkipHeader(t, r)
+	_, err := readKVs(r, 1)
+	if !errors.Is(err, ErrStringTooLong) {
+		t.Fatalf("长度 %d 应被拒绝，err = %v", maxStringLen+1, err)
 	}
 }
 

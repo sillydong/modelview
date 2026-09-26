@@ -124,6 +124,12 @@ func TestFormatValue(t *testing.T) {
 		{"空字符串", "", ""},
 		{"短数组", arrayValue{ElemType: typeUint32, Len: 3,
 			NumElems: []any{uint32(1), uint32(2), uint32(3)}}, "[1, 2, 3]"},
+		// 截断阈值是 maxArrayPrint = 8。边界两侧都要有用例 ——
+		// 只测 3 项和 100 项的话，把 > 改成 >= 不会有任何测试失败。
+		{"恰好 8 项不截断", arrayValue{ElemType: typeUint32, Len: 8,
+			NumElems: mkAny(8)}, "[0, 1, 2, 3, 4, 5, 6, 7]"},
+		{"9 项开始截断", arrayValue{ElemType: typeUint32, Len: 9,
+			NumElems: mkAny(9)}, "[0, 1, 2, 3, 4, 5, 6, 7, … 共 9 项]"},
 		{"长数组截断显示", arrayValue{ElemType: typeUint32, Len: 100,
 			NumElems: mkAny(100)}, "[0, 1, 2, 3, 4, 5, 6, 7, … 共 100 项]"},
 		{"字符串数组", arrayValue{ElemType: typeString, Len: 2,

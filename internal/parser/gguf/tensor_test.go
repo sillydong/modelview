@@ -73,8 +73,11 @@ func TestReadTensorInfos_维数超限报错(t *testing.T) {
 	b := newBuilder()
 	b.str("bad")
 	b.u32(99) // 超过 maxDims
-	if _, err := readTensorInfos(newReader(bytes.NewReader(b.bytes())), 1); err == nil {
-		t.Fatal("维数超限应报错")
+	_, err := readTensorInfos(newReader(bytes.NewReader(b.bytes())), 1)
+	// 必须断言是哪个错误：把守卫改成永假之后，错误会改由
+	// "读到第 3 维时 EOF"产生 —— 只断言 err != nil 的测试照样通过。
+	if !errors.Is(err, ErrTooManyDims) {
+		t.Fatalf("err = %v, 期望 ErrTooManyDims", err)
 	}
 }
 
@@ -208,6 +211,31 @@ func TestTensorByteSize_覆盖全部类型码(t *testing.T) {
 		{15, "Q8_K", model.DtypeQ8K, 4 + 256 + 32, qkK},
 	}
 
+	// IQ 系列（i-quants）：块结构未收录，算不出字节数。
+	// 但**类型码到名字的映射**必须准确 —— 这是这些张量在界面上唯一的输出。
+	// perUnit/unit 为 0 表示"不该算得出来"。
+	iqCodes := []struct {
+		code  uint32
+		dtype model.Dtype
+	}{
+		{16, model.DtypeIQ2XXS}, {17, model.DtypeIQ2XS}, {18, model.DtypeIQ3XXS},
+		{19, model.DtypeIQ1S}, {20, model.DtypeIQ4NL}, {21, model.DtypeIQ3S},
+		{22, model.DtypeIQ2S}, {23, model.DtypeIQ4XS}, {29, model.DtypeIQ1M},
+	}
+	for _, iq := range iqCodes {
+		got, ok := ggmlDtype(iq.code)
+		if !ok {
+			t.Errorf("IQ 类型码 %d 未识别", iq.code)
+			continue
+		}
+		if got != iq.dtype {
+			t.Errorf("ggmlDtype(%d) = %q, want %q", iq.code, got, iq.dtype)
+		}
+		if _, err := tensorByteSize([]int64{256}, iq.code); err == nil {
+			t.Errorf("IQ 类型码 %d 不该算得出字节数（块结构未收录）", iq.code)
+		}
+	}
+
 	// 这张表必须覆盖块表的全部条目 —— 新增类型时同步补进来。
 	if len(tests) != len(blockBytes) {
 		t.Errorf("本表覆盖 %d 个类型，块表有 %d 个 —— 有类型没被验证到",
@@ -257,23 +285,17 @@ func TestTensorByteSize_未收录类型返回可识别错误(t *testing.T) {
 	}
 }
 
-// 块字节数与块元素数必须自洽：块字节数应是整数，且能整除。
-func TestBlockTable_自洽(t *testing.T) {
-	for code, size := range blockBytes {
-		elems := blockElemCount(code)
-		if elems <= 0 {
-			t.Errorf("类型 %d 的块元素数 = %d", code, elems)
-		}
-		if size <= 0 {
-			t.Errorf("类型 %d 的块字节数 = %d", code, size)
-		}
-	}
-}
-
-// 最强的验证：真实文件里所有张量的字节区间必须互不重叠。
+// 用真实文件验证张量的字节区间互不重叠。
 //
-// 这条不变式能抓住任何一处块大小写错 —— 只要某个类型的块大小偏大，
-// 该类型张量的结束位置就会越过下一个张量的起点，重叠量恰好等于误差。
+// 只要某个类型的块大小偏大，该类型张量的结束位置就会越过下一个张量的起点，
+// 重叠量恰好等于误差；偏小则表现为空隙。两个方向都杀得死。
+//
+// **覆盖边界**：这条不变式只能验证**这四个文件里实际出现的类型**
+// （F32/F16/BF16/Q4_K/Q5_0/Q6_K/Q8_0 共 7 项）。其余 13 项
+// （Q4_0/Q4_1/Q5_1/Q8_1/Q2_K/Q3_K/Q5_K/Q8_K/I8/I16/I32/I64/F64）
+// 没有任何真实文件覆盖，只能靠 TestTensorByteSize_覆盖全部类型码
+// 逐值钉住 —— 那张表的期望值来自结构体定义，是第三处手抄，
+// 三处一致地写错仍然拦不住。
 //
 // 注意不能只检查"最后一个张量结束于文件末尾"：那样只有排在最末的那个
 // 类型会被验证到，其它类型写错也发现不了。
@@ -285,14 +307,16 @@ func TestBlockTable_与真实文件吻合(t *testing.T) {
 		"sha256-7121486771cbfe2", // gemma4:26b     + Q5_0/Q8_0
 	}
 
-	tested := 0
+	covered := map[model.Dtype]bool{}
 	for _, prefix := range blobs {
 		path := findBlob(prefix)
 		if path == "" {
+			// 不能静默 continue：少一个文件，测试照样全绿，
+			// 该文件覆盖的类型（如 Q5_0/Q8_0）就凭空消失了。
+			t.Errorf("找不到 %s*，该文件覆盖的类型未被验证", prefix)
 			continue
 		}
 		t.Run(prefix[7:15], func(t *testing.T) {
-			tested++
 			m, err := Parse(path)
 			if err != nil {
 				t.Fatalf("Parse 失败: %v", err)
@@ -303,6 +327,10 @@ func TestBlockTable_与真实文件吻合(t *testing.T) {
 			slices.SortFunc(sorted, func(a, b *model.Tensor) int {
 				return cmp.Compare(a.Offset, b.Offset)
 			})
+
+			for _, tn := range sorted {
+				covered[tn.Dtype] = true
+			}
 
 			align := int64(32)
 			for _, tn := range sorted {
@@ -326,15 +354,30 @@ func TestBlockTable_与真实文件吻合(t *testing.T) {
 				}
 			}
 
+			// 实测四个文件的差值**恰好为 0**（GGUF 数据区紧排到文件末尾）。
+			// 这里不放宽容差：1024 字节的口子意味着末尾张量的块大小偏小
+			// 一千字节以内永远抓不到，而注释声称的是"差值 0"。
 			last := sorted[len(sorted)-1]
-			if diff := m.FileSize - (last.Offset + last.ByteSize); diff < 0 || diff > 1024 {
+			if end := last.Offset + last.ByteSize; end != m.FileSize {
 				t.Errorf("最后一个张量 %s 结束于 %d，文件大小 %d，差值 %d",
-					last.Name, last.Offset+last.ByteSize, m.FileSize, diff)
+					last.Name, end, m.FileSize, m.FileSize-end)
 			}
 		})
 	}
-	if tested == 0 {
-		t.Skip("本机没有可用的 ollama 模型文件")
+	// 真实文件能覆盖到的类型集合必须至少包含这几个 ——
+	// 块表里其余项由 TestTensorByteSize_覆盖全部类型码 兜底。
+	want := []model.Dtype{
+		model.DtypeF32, model.DtypeF16, model.DtypeBF16,
+		model.DtypeQ4K, model.DtypeQ5_0, model.DtypeQ6K, model.DtypeQ8_0,
+	}
+	var missing []string
+	for _, d := range want {
+		if !covered[d] {
+			missing = append(missing, string(d))
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("真实文件未覆盖到预期类型 %v —— 覆盖范围缩水了", missing)
 	}
 }
 

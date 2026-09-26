@@ -36,6 +36,13 @@ func TestProbe(t *testing.T) {
 			want: model.FormatSafeTensors,
 		},
 		{
+			name: "未知: 头部长度合法但第 9 字节不是 {（safetensors 反例）",
+			// 前 8 字节是个合理的头部长度，但后面不是 JSON 对象。
+			// 没有这条反例的话，删掉 first[0]=='{' 这个判据不会有测试失败。
+			data: []byte{100, 0, 0, 0, 0, 0, 0, 0, 'X', 'Y'},
+			want: model.FormatUnknown,
+		},
+		{
 			name: "PyTorch: ZIP magic",
 			data: []byte{'P', 'K', 3, 4, 0, 0, 0, 0},
 			want: model.FormatPyTorch,
