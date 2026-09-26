@@ -1,6 +1,6 @@
 // Command modelview 解析并展示模型文件的结构信息。
 //
-// 当前支持 GGUF；safetensors 与 PyTorch 见后续计划。
+// 支持 GGUF、safetensors 与 PyTorch（.pt）三种格式。
 package main
 
 import (
@@ -83,6 +83,24 @@ func printSummary(m *model.Model) {
 		fmt.Printf("\n⚠ 告警（%d 条）\n", n)
 		for _, w := range m.Warnings {
 			fmt.Printf("  %s\n", w)
+		}
+	}
+
+	// 存储块与权重绑定：只有真的存在别名时才展示，否则是噪音。
+	//
+	// 判据必须用 TiedGroups 而不是"两个数字不相等"。
+	// StorageBytes 的语义随格式变（见 model.Model 的说明）：safetensors
+	// 下它是数据区跨度，头部允许 data_offsets 不从 0 开始，所以它**可能
+	// 大于**张量字节和 —— 那时打印出来就是"去重后比去重前更大"加一个
+	// 负数差值，而下面一行权重绑定是空的，自相矛盾。
+	//
+	// 不解释这个差值，用户会以为算错了；解释错了更糟。
+	if len(m.TiedGroups) > 0 {
+		fmt.Printf("\n存储     张量逻辑字节 %s，去重后 %s（差 %s，即别名重复计入的部分）\n",
+			humanBytes(m.TensorBytes()), humanBytes(m.StorageBytes),
+			humanBytes(m.TensorBytes()-m.StorageBytes))
+		for _, g := range m.TiedGroups {
+			fmt.Printf("         权重绑定: %s\n", strings.Join(g, " ≡ "))
 		}
 	}
 

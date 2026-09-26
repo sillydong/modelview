@@ -126,3 +126,22 @@ func (d Dtype) Known() bool {
 	_, ok := dtypeTable[d]
 	return ok
 }
+
+// ByteSize 返回每元素占用的字节数。
+//
+// 只对**非量化且位宽已知**的类型成立 —— 量化类型（Q4_K 等）按块存储，
+// 没有"每元素字节数"这个概念，返回 false。
+//
+// 这是全项目唯一的 dtype→字节数 出处。各解析器不要再自己写一份 switch：
+// 那种拷贝漏改时不会编译报错，只会让调用点的完整性校验
+// （如 safetensors 的"data_offsets 跨度必须等于形状 × 字节数"）**静默失效**。
+func (d Dtype) ByteSize() (int64, bool) {
+	p, ok := dtypeTable[d]
+	if !ok || p.IsQuantized || p.BlockSize != 1 || p.BitsPerWeight <= 0 {
+		return 0, false
+	}
+	if bits := p.BitsPerWeight; bits == float64(int64(bits)) {
+		return int64(bits) / 8, true
+	}
+	return 0, false
+}

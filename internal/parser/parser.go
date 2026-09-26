@@ -8,9 +8,11 @@ import (
 	"github.com/sillydong/modelview/internal/detect"
 	"github.com/sillydong/modelview/internal/model"
 	"github.com/sillydong/modelview/internal/parser/gguf"
+	"github.com/sillydong/modelview/internal/parser/pytorch"
+	"github.com/sillydong/modelview/internal/parser/safetensors"
 )
 
-// ErrUnsupported 表示格式无法识别或尚未实现。
+// ErrUnsupported 表示格式无法识别。
 // 调用方可用 errors.Is 判断。
 var ErrUnsupported = errors.New("无法识别的模型格式")
 
@@ -25,11 +27,9 @@ func Parse(path string) (*model.Model, error) {
 	case model.FormatGGUF:
 		return gguf.Parse(path)
 	case model.FormatSafeTensors:
-		// 计划 ② 实现
-		return nil, fmt.Errorf("SafeTensors: %w", ErrUnsupported)
+		return safetensors.Parse(path)
 	case model.FormatPyTorch:
-		// 计划 ② 实现
-		return nil, fmt.Errorf("PyTorch: %w", ErrUnsupported)
+		return pytorch.Parse(path)
 	default:
 		return nil, fmt.Errorf("%s: %w", path, ErrUnsupported)
 	}

@@ -1,3 +1,5 @@
 /modelview
 *.test
 .modelview-cache/
+__pycache__/
+*.pyc
