@@ -32,6 +32,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/sillydong/modelview/internal/decode"
 	"github.com/sillydong/modelview/internal/model"

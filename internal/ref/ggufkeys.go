@@ -253,8 +253,16 @@ func lookupKey(key string) (keyEntry, bool, bool) {
 // 这里用**枚举名**（MOSTLY_Q4_K_M）而不是显示名（"Q4_K - Medium"）：
 // 枚举名跨版本稳定，显示名上游改过措辞。display 字段给界面用。
 //
-// 中间几个编号（4/5/6、33/34/35）上游注释掉了但保留编号，
-// **不列出来是有意的**：列出来会让用户以为那些档还在产出。
+// 中间几个编号（4/5/6、33/34/35）上游注释掉了但保留编号 ——
+// 它们单列在下面的 deprecatedFileTypes 里。
+//
+// **原先完全不列，理由变了**：那时候的判断是"列出来会让用户以为
+// 那些档还在产出"。但实测 ollama 的 gpt-oss:20b 里 general.file_type
+// 写的就是 **4**（一个真实、流行的模型），而 FileTypeByCode(4) 当时
+// 返回"查不到"，界面上什么都不显示 —— 用户对着一个真实的值得不到任何解释。
+//
+// 现在的做法：照列，但把上游的移除原因写在 note 里，
+// 读起来是"这个编号已废弃"而不是"这是一种现役量化档"。
 var fileTypeValues = []struct {
 	code    uint32
 	enum    string
@@ -300,6 +308,32 @@ var fileTypeValues = []struct {
 	{39, "MOSTLY_NVFP4", "NVFP4", "NVIDIA 的 4 位格式"},
 	{40, "MOSTLY_Q1_0", "Q1_0", "1 位"},
 	{41, "MOSTLY_Q2_0", "Q2_0", "2 位（非 K 系列）"},
+}
+
+// deprecatedFileTypes 是上游**已废弃/移除**的档位编号。
+//
+// 名称与原因逐条抄自 llama.h 里被注释掉的那几行（2026-09-27 核过）：
+//
+//	// LLAMA_FTYPE_MOSTLY_Q4_1_SOME_F16 = 4,  // tok_embeddings.weight and output.weight are F16
+//	// LLAMA_FTYPE_MOSTLY_Q4_2       = 5,  // support has been removed
+//	// LLAMA_FTYPE_MOSTLY_Q4_3       = 6,  // support has been removed
+//	//LLAMA_FTYPE_MOSTLY_Q4_0_4_4      = 33, // removed from gguf files, use Q4_0 and runtime repack
+//
+// 它们**会出现在真实文件里**（实测 ollama 的 gpt-oss:20b 写的是 4），
+// 所以必须查得到 —— 查不到就是"用户看到一个值，工具一句话都不说"。
+var deprecatedFileTypes = []struct {
+	code uint32
+	enum string
+	why  string
+}{
+	{4, "MOSTLY_Q4_1_SOME_F16",
+		"上游注释里写的是「Q4_1，但 token_embeddings.weight 与 output.weight 是 F16」，" +
+			"该编号已废弃"},
+	{5, "MOSTLY_Q4_2", "上游已移除支持"},
+	{6, "MOSTLY_Q4_3", "上游已移除支持"},
+	{33, "MOSTLY_Q4_0_4_4", "已从 gguf 文件里移除，改用 Q4_0 + 运行时重排"},
+	{34, "MOSTLY_Q4_0_4_8", "已从 gguf 文件里移除，改用 Q4_0 + 运行时重排"},
+	{35, "MOSTLY_Q4_0_8_8", "已从 gguf 文件里移除，改用 Q4_0 + 运行时重排"},
 }
 
 // ftypeGuessedFlag 是 llama.h 里 LLAMA_FTYPE_GUESSED 的取值。
@@ -350,6 +384,23 @@ func ggufKeysTable() Table {
 			SeeAlso: []string{"key:general.file_type"},
 		}
 		tb.Entries = append(tb.Entries, e)
+	}
+
+	// 已废弃的编号也列出来 —— 它们会出现在真实文件里（见 deprecatedFileTypes）。
+	// **标题里就写明"已废弃"**，不给它现役档的待遇
+	for _, v := range deprecatedFileTypes {
+		code := strconv.FormatUint(uint64(v.code), 10)
+		tb.Entries = append(tb.Entries, Entry{
+			ID:    "filetype:" + code,
+			Title: "general.file_type = " + code + "（已废弃：" + v.enum + "）",
+			Fields: []Field{
+				{"码", code},
+				{"原名", v.enum},
+				{"状态", "上游已废弃/移除"},
+			},
+			Notes:   v.why + "。文件里读到这个值，说明写入方用了旧编号 —— 档位不可信，以张量实际类型为准。",
+			SeeAlso: []string{"key:general.file_type"},
+		})
 	}
 
 	// 后缀表也做成条目：用户看到 qwen2.attention.head_count 时，

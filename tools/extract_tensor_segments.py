@@ -32,7 +32,11 @@ import os
 import struct
 import sys
 
-BLOBS = sorted(glob.glob(os.path.expanduser("~/.ollama/models/blobs/sha256-*")))
+# **跳过没下完的**（<digest>-partial 及其分片）：拿半个文件当语料，
+# 生成出来的清单是假的，而它会被当成真值入库。
+BLOBS = [p for p in sorted(glob.glob(
+    os.path.expanduser("~/.ollama/models/blobs/sha256-*")))
+    if "-partial" not in os.path.basename(p)]
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "..", "internal", "ref", "testdata", "real_segments.txt")
 

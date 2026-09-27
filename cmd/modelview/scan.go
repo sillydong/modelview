@@ -73,6 +73,14 @@ func runScan(ctx context.Context, asJSON bool) error {
 		fmt.Println(scanLine(res.Items[i]))
 	}
 
+	// 未完成的下载单独说一句：它占着盘但不是"可回收"，
+	// 删了会毁掉用户自己的下载
+	if n := len(res.InProgress); n > 0 {
+		fmt.Printf("\n另有 %d 个未完成的下载（合计 %s），**不算可回收**：\n"+
+			"  那是 ollama 正在下载或上次中断留下的，删掉会毁掉下载\n",
+			n, humanBytes(totalSize(res.InProgress)))
+	}
+
 	// 孤儿 blob 单独一段：它不属于任何模型，
 	// 混在模型列表里会让人以为那也是模型
 	if len(res.Orphans) > 0 {

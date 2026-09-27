@@ -203,6 +203,9 @@ def find_blobs() -> list[str]:
         return []
     out = []
     for p in sorted(glob.glob(os.path.join(d, "sha256-*"))):
+        # 跳过没下完的（<digest>-partial）：读到一半的文件会给出错的结论
+        if "-partial" in os.path.basename(p):
+            continue
         if os.path.getsize(p) < 1 << 20:
             continue
         with open(p, "rb") as fh:

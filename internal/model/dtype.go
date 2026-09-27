@@ -27,18 +27,25 @@ const (
 	DtypeBool Dtype = "BOOL"
 
 	// GGML 量化类型。
-	DtypeQ4_0   Dtype = "Q4_0"
-	DtypeQ4_1   Dtype = "Q4_1"
-	DtypeQ5_0   Dtype = "Q5_0"
-	DtypeQ5_1   Dtype = "Q5_1"
-	DtypeQ8_0   Dtype = "Q8_0"
-	DtypeQ8_1   Dtype = "Q8_1"
-	DtypeQ2K    Dtype = "Q2_K"
-	DtypeQ3K    Dtype = "Q3_K"
-	DtypeQ4K    Dtype = "Q4_K"
-	DtypeQ5K    Dtype = "Q5_K"
-	DtypeQ6K    Dtype = "Q6_K"
-	DtypeQ8K    Dtype = "Q8_K"
+	DtypeQ4_0 Dtype = "Q4_0"
+	DtypeQ4_1 Dtype = "Q4_1"
+	DtypeQ5_0 Dtype = "Q5_0"
+	DtypeQ5_1 Dtype = "Q5_1"
+	DtypeQ8_0 Dtype = "Q8_0"
+	DtypeQ8_1 Dtype = "Q8_1"
+	DtypeQ2K  Dtype = "Q2_K"
+	DtypeQ3K  Dtype = "Q3_K"
+	DtypeQ4K  Dtype = "Q4_K"
+	DtypeQ5K  Dtype = "Q5_K"
+	DtypeQ6K  Dtype = "Q6_K"
+	DtypeQ8K  Dtype = "Q8_K"
+	// MXFP4 / NVFP4 是 OCP MX 与 NVIDIA 的 4 位浮点块格式，
+	// 与上面那些"整数码 + scale"的方案不同：元素本身是 4 位浮点。
+	// 本工具**不解码**它们（没有解码器），但块结构已收录，
+	// 所以能算出占用大小 —— 之前缺这两个码，gpt-oss 那类模型的
+	// 张量会显示成"类型 ? / 0 B"。
+	DtypeMXFP4  Dtype = "MXFP4"
+	DtypeNVFP4  Dtype = "NVFP4"
 	DtypeIQ2XXS Dtype = "IQ2_XXS"
 	DtypeIQ2XS  Dtype = "IQ2_XS"
 	DtypeIQ3XXS Dtype = "IQ3_XXS"
@@ -102,6 +109,17 @@ var dtypeTable = map[Dtype]dtypeProps{
 	DtypeQ5_1: {BitsPerWeight: 6.0, IsQuantized: true, BlockSize: 32, BlockBytes: 24, GGMLCode: 7},
 	DtypeQ8_0: {BitsPerWeight: 8.5, IsQuantized: true, BlockSize: 32, BlockBytes: 34, GGMLCode: 8},
 	DtypeQ8_1: {BitsPerWeight: 9.0, IsQuantized: true, BlockSize: 32, BlockBytes: 36, GGMLCode: 9},
+	// MXFP4 / NVFP4：块结构来自 ggml 的 type_size / type_blck_size
+	// （经 gguf 包的 GGML_QUANT_SIZES 核对）。
+	//
+	// 位宽由块字节数推导（同下面那批）：17×8/32 = 4.25、36×8/64 = 4.5，
+	// 由 TestBlockBytes_量化位宽自洽 钉住。
+	//
+	// **只收了块结构，没有解码器**：analyze 对它们会明确报"解码未实现"，
+	// 不会给出可能错误的数值统计。
+	DtypeMXFP4: {BitsPerWeight: 4.25, IsQuantized: true, BlockSize: 32, BlockBytes: 17, GGMLCode: 39},
+	DtypeNVFP4: {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 64, BlockBytes: 36, GGMLCode: 40},
+
 	// 以下位宽由块字节数推导：bits = BlockBytes × 8 / BlockSize。
 	// 数值经真实 GGUF 文件反推验证（见 gguf 包的 TestBlockTable_与真实文件吻合）。
 	// 块字节数原先在 parser/gguf 里按 GGML 类型码另存一份，现已收敛到本表。

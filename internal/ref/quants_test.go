@@ -29,11 +29,10 @@ func TestQuants_覆盖全部量化类型(t *testing.T) {
 	}
 	// 反向门禁：覆盖数掉了说明类型表变了，核对后再改这个数。
 	//
-	// **21 是实测值**：经典 6（Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q8_1）
-	// + K 系列 6（Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K）+ IQ 系列 9 = 21。
-	// 写计划时这里写的是 23，还把分组说成"10 种经典 + 12 种 K/IQ" ——
-	// 两处都是估的，落地一跑就露馅了。
-	const wantCovered = 21
+	// **23 是实测值**：经典 6（Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q8_1）
+	// + K 系列 6（Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K）+ IQ 系列 9
+	// + MXFP4/NVFP4 2 = 23。
+	const wantCovered = 23
 	if covered != wantCovered {
 		t.Errorf("量化类型有 %d 个，预期 %d 个 —— 类型表变了，核对后再改这个数",
 			covered, wantCovered)
@@ -118,9 +117,8 @@ func TestQuants_类型码来自类型表(t *testing.T) {
 			t.Errorf("%s 的类型码写的是 %q，类型表里是 %q", name, got, want)
 		}
 	}
-	// 精确值：21 个量化类型（经典 6 + K 系列 6 + IQ 系列 9）都有类型码。
-	// 下限的话，少查几个不会有任何东西红
-	if checked != 21 {
+	// 精确值：23 个量化类型都有类型码（下限的话少查几个不会有东西红）
+	if checked != 23 {
 		t.Fatalf("查了 %d 个类型码，预期 21 个 —— 增删类型时同步改这里", checked)
 	}
 }
@@ -264,8 +262,8 @@ func TestQuants_位宽来源唯一(t *testing.T) {
 // 「按位宽升序」这个说法在那 9 行上是假的。
 func TestQuants_按位宽升序(t *testing.T) {
 	entries := quantsTable().Entries
-	if len(entries) != 21 {
-		t.Fatalf("量化条目 %d 个，预期 21 个 —— 这条排序断言要覆盖全表", len(entries))
+	if len(entries) != 23 {
+		t.Fatalf("量化条目 %d 个，预期 23 个 —— 这条排序断言要覆盖全表", len(entries))
 	}
 	for i := 1; i < len(entries); i++ {
 		prev, cur := entries[i-1], entries[i]

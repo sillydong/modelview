@@ -60,7 +60,7 @@ func names(items []Item) []string {
 // 模型名要从 manifest 路径推出来，blob 文件名本身不含模型信息。
 func TestScanOllama_模型名与路径(t *testing.T) {
 	root := fakeOllama(t)
-	items, _, errs := scanOllama(root)
+	items, _, _, errs := scanOllama(root)
 	if len(errs) != 0 {
 		t.Fatalf("scanOllama 报了警告: %v", errs)
 	}
@@ -100,7 +100,7 @@ func TestScanOllama_模型名与路径(t *testing.T) {
 // 非模型层的内容要能读出来 —— 它是模型的"对话逻辑"（spec §7.1）。
 func TestScanOllama_附加上层内容(t *testing.T) {
 	root := fakeOllama(t)
-	items, _, errs := scanOllama(root)
+	items, _, _, errs := scanOllama(root)
 	if len(errs) != 0 {
 		t.Fatalf("不该有警告: %v", errs)
 	}
@@ -136,7 +136,7 @@ func TestScanOllama_附加上层内容(t *testing.T) {
 // 孤儿 blob：没有被任何 manifest 引用的，要单独列出来并给出可回收空间。
 func TestScanOllama_孤儿blob(t *testing.T) {
 	root := fakeOllama(t)
-	_, orphans, errs := scanOllama(root)
+	_, orphans, _, errs := scanOllama(root)
 	if len(errs) != 0 {
 		t.Fatalf("scanOllama 报了警告: %v", errs)
 	}
@@ -170,7 +170,7 @@ func TestScanOllama_坏manifest不影响其它(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("{ 不是 JSON"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	items, orphans, errs := scanOllama(root)
+	items, orphans, _, errs := scanOllama(root)
 	if len(items) != 2 {
 		t.Errorf("找到 %d 个模型，want 2 —— 坏的 manifest 把好的也带下去了？%v",
 			len(items), names(items))
@@ -191,7 +191,7 @@ func TestScanOllama_坏manifest不影响其它(t *testing.T) {
 // 没有坏 manifest 时，孤儿照常检测（不要为了防上面那种情况而永远不报）。
 func TestScanOllama_正常时照常报孤儿(t *testing.T) {
 	root := fakeOllama(t)
-	items, orphans, errs := scanOllama(root)
+	items, orphans, _, errs := scanOllama(root)
 	if len(errs) != 0 {
 		t.Fatalf("不该有警告: %v", errs)
 	}
@@ -210,7 +210,7 @@ func TestScanOllama_blob缺失要报错(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, "blobs/sha256-aaaa")); err != nil {
 		t.Fatal(err)
 	}
-	items, _, errs := scanOllama(root)
+	items, _, _, errs := scanOllama(root)
 	if len(errs) != 0 {
 		t.Fatalf("不该有警告: %v", errs)
 	}
@@ -230,7 +230,7 @@ func TestScanOllama_blob缺失要报错(t *testing.T) {
 
 // 目录不存在时返回空，不报错。
 func TestScanOllama_目录不存在(t *testing.T) {
-	items, orphans, errs := scanOllama(filepath.Join(t.TempDir(), "没有"))
+	items, orphans, _, errs := scanOllama(filepath.Join(t.TempDir(), "没有"))
 	if len(items) != 0 || len(orphans) != 0 || len(errs) != 0 {
 		t.Errorf("items=%v orphans=%v errs=%v，want 全空", items, orphans, errs)
 	}
@@ -325,7 +325,7 @@ func TestScanOllama_孤儿大小按目标(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, orphans, errs := scanOllama(root)
+	_, orphans, _, errs := scanOllama(root)
 	if len(errs) != 0 {
 		t.Fatalf("扫描报错: %v", errs)
 	}
@@ -341,5 +341,78 @@ func TestScanOllama_孤儿大小按目标(t *testing.T) {
 	if got.Size != int64(len(big)) {
 		t.Errorf("孤儿报的大小是 %d，应当是目标的 %d（链接自身才是 %d）",
 			got.Size, len(big), len(orphan))
+	}
+}
+
+// **未完成的下载不能被报成"可回收"。**
+//
+// ollama 下载时先建 `<digest>-partial`（预分配到最终大小，所以看着是满的），
+// 另有一批 `<digest>-partial-<N>` 分片。实测拉 gpt-oss:20b 到一半时，
+// 扫描输出写着"另有 17 个孤儿 blob 可回收 12.85 GiB"—— 而那 12.85 GiB
+// 正是那个下到一半的模型。用户照着"可回收"去删，就把自己的下载毁了。
+func TestScanOllama_未完成的下载不是孤儿(t *testing.T) {
+	root := fakeOllama(t)
+	digest := strings.Repeat("ab", 32) // 64 位十六进制
+	partial := filepath.Join(root, "blobs", "sha256-"+digest+"-partial")
+	chunk := filepath.Join(root, "blobs", "sha256-"+digest+"-partial-3")
+	for _, p := range []string{partial, chunk} {
+		if err := os.WriteFile(p, make([]byte, 4096), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, orphans, inProgress, errs := scanOllama(root)
+	for _, o := range orphans {
+		if o.Path == partial || o.Path == chunk {
+			t.Errorf("未完成的下载被报成孤儿（可回收）: %s —— "+
+				"用户照着删会毁掉自己的下载", filepath.Base(o.Path))
+		}
+	}
+	// 也不能一声不吭：磁盘被占着，用户得有解释。
+	// **断言的是数据（InProgress）而不是某句文案** —— 文案会改，
+	// 而"这两个文件被认出来了"是事实
+	got := map[string]bool{}
+	for _, it := range inProgress {
+		got[filepath.Base(it.Path)] = true
+	}
+	if !got[filepath.Base(partial)] || !got[filepath.Base(chunk)] {
+		t.Errorf("未完成的下载没被单独列出来 —— 用户找不到那 12.85 GiB 去哪了: %v", got)
+	}
+	// 它也**不是"错误"**：Errs 是失败原因通道，把说明塞进去会让
+	// "真实语料扫描不该报错"那条断言失效
+	if len(errs) != 0 {
+		t.Errorf("未完成的下载不该进 Errs（那是失败原因通道）: %v", errs)
+	}
+	// 正常孤儿照报（别为了防上面那种而少报）
+	if len(orphans) != 1 || filepath.Base(orphans[0].Path) != "sha256-eeee" {
+		t.Errorf("孤儿 %d 个：%v，want 只有 sha256-eeee", len(orphans), names(orphans))
+	}
+}
+
+// 判据要**精确**，不能宽到把正常 blob 也当成下载中。
+//
+// 宽判据（比如 Contains(name, "partial")）的后果相反但同样糟：
+// 一个名字里恰好含 partial 的真孤儿会被永远漏报，"可回收"永远少算它。
+func TestIsInProgressBlob_边界(t *testing.T) {
+	hex64 := strings.Repeat("a1", 32)
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"sha256-" + hex64, false},                                // 下完了
+		{"sha256-" + hex64 + "-partial", true},                    // 预分配的目标文件
+		{"sha256-" + hex64 + "-partial-0", true},                  // 分片
+		{"sha256-" + hex64 + "-partial-12", true},                 // 分片
+		{"sha256-abc", false},                                     // 短名字，不像 ollama 的 blob
+		{"sha256-" + hex64 + "-partialx", true},                   // 前缀匹配 -partial，仍是下载中
+		{"sha256-" + hex64 + "x-partial", false},                  // 64 位之后不是十六进制 → 不是我们的形状
+		{"sha256-partial", false},                                 // 长度不够
+		{"other-" + hex64 + "-partial", false},                    // 不是 sha256- 前缀
+		{"sha256-" + strings.Repeat("z", 64) + "-partial", false}, // 非十六进制
+	}
+	for _, tt := range tests {
+		if got := IsInProgressBlob(tt.name); got != tt.want {
+			t.Errorf("IsInProgressBlob(%q) = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

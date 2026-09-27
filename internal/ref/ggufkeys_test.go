@@ -66,10 +66,20 @@ func TestGGUFKeys_file_type取值(t *testing.T) {
 			t.Errorf("没有 file_type 取值 %s 的条目", code)
 		}
 	}
-	// 上游已废弃的编号不该列出来（列了会让用户以为那些档还在产出）
+	// 上游已废弃的编号**要列**，但必须标明已废弃。
+	//
+	// 这条断言的方向改过：原先要求"不该列出来"（理由是列了会让用户
+	// 以为那些档还在产出）。但实测 ollama 的 gpt-oss:20b 里
+	// general.file_type 写的就是 4 —— 真实文件里会出现这些编号，
+	// 不列的话用户对着一个值得不到任何解释。改成"列，但标明已废弃"。
 	for _, code := range []uint32{4, 5, 6, 33, 34, 35} {
-		if _, ok := ByID("filetype:" + strconv.FormatUint(uint64(code), 10)); ok {
-			t.Errorf("档位 %d 上游已注释掉（编号保留但不再产出），不该列出来", code)
+		e, ok := ByID("filetype:" + strconv.FormatUint(uint64(code), 10))
+		if !ok {
+			t.Errorf("档位 %d 没列出来 —— 真实文件里会出现它（实测 gpt-oss:20b 写的就是 4）", code)
+			continue
+		}
+		if !strings.Contains(e.Title, "已废弃") {
+			t.Errorf("档位 %d 没标明已废弃，用户会以为它是现役档: %q", code, e.Title)
 		}
 	}
 }
@@ -267,5 +277,52 @@ func TestGGUFKeys_LookupKey与表一致(t *testing.T) {
 	}
 	if !strings.HasPrefix(e.ID, "key:") {
 		t.Errorf("精确命中的 ID 是 %q，应当是 key: 开头", e.ID)
+	}
+}
+
+// 已废弃的 file_type 编号必须**查得到**，而且要说清它已废弃。
+//
+// 实测：ollama 的 gpt-oss:20b 里 general.file_type 写的就是 4 ——
+// 一个真实、流行的模型。而 4 是上游 llama.h 里注释掉的废弃编号。
+// 这里原先完全不列废弃编号（当时的理由是"列出来会让用户以为那些档还在产出"，
+// 但没人想到真实文件里会出现），于是 FileTypeByCode(4) 返回"查不到"，
+// 界面上什么都不显示 —— 用户对着一个真实的值得不到任何解释。
+func TestFileType_废弃编号查得到(t *testing.T) {
+	// 逐条对照上游 llama.h 里被注释掉的那几行（含各自的废弃原因）
+	deprecated := map[uint32]string{
+		4:  "MOSTLY_Q4_1_SOME_F16",
+		5:  "MOSTLY_Q4_2",
+		6:  "MOSTLY_Q4_3",
+		33: "MOSTLY_Q4_0_4_4",
+		34: "MOSTLY_Q4_0_4_8",
+		35: "MOSTLY_Q4_0_8_8",
+	}
+	for code, enum := range deprecated {
+		e, ok := FileTypeByCode(code)
+		if !ok {
+			t.Errorf("file_type %d（%s）查不到 —— 真实文件里会出现这个值", code, enum)
+			continue
+		}
+		if !strings.Contains(e.Title, "已废弃") {
+			t.Errorf("file_type %d 的标题是 %q，没说明它已废弃 —— "+
+				"用户会以为这是一种现役量化档", code, e.Title)
+		}
+		if !strings.Contains(e.Title, enum) {
+			t.Errorf("file_type %d 的标题里没有上游原名 %s: %q", code, enum, e.Title)
+		}
+	}
+	// 反面对照：现役档**不能**被标成已废弃
+	for _, code := range []uint32{0, 1, 15, 38} {
+		e, ok := FileTypeByCode(code)
+		if !ok {
+			t.Fatalf("现役档 %d 查不到", code)
+		}
+		if strings.Contains(e.Title, "已废弃") {
+			t.Errorf("现役档 %d 被标成了已废弃: %q", code, e.Title)
+		}
+	}
+	// 带 GUESSED 标志位的也要能查到（1028 = 1024|4）
+	if e, ok := FileTypeByCode(1028); !ok || !strings.Contains(e.Title, "已废弃") {
+		t.Errorf("1028（1024|4）应当剥掉标志位后查到废弃档 4，实际: ok=%v %q", ok, e.Title)
 	}
 }

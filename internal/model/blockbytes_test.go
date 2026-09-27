@@ -94,9 +94,10 @@ func TestBlockBytes_量化位宽自洽(t *testing.T) {
 	}
 	// 反向门禁：覆盖数掉了说明 table 结构变了，测试会静默变成空转。
 	//
-	// 12 是实测值：Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 Q8_1 Q2_K Q3_K Q4_K Q5_K Q6_K Q8_K。
+	// 14 是实测值：Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 Q8_1 Q2_K Q3_K Q4_K Q5_K Q6_K Q8_K
+	// + MXFP4 NVFP4（后两个只有块结构、没有解码器，但位宽由块字节数推导，同属这一类）。
 	// 写成 18 会让测试失败 —— 这条门禁第一次运行就抓出了我自己写错的预期值。
-	const wantCovered = 12
+	const wantCovered = 14
 	if covered != wantCovered {
 		t.Errorf("覆盖了 %d 个量化类型，预期 %d 个 —— 表结构变了，重新核对后再改这个数",
 			covered, wantCovered)

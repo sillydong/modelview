@@ -63,7 +63,7 @@ type Path struct {
 	// 条目在那种写法下是能写出来的，而它的表现是**静默扫不到任何东西**
 	//（命中 bool、进不了 if、continue）—— 用户看到的是"我没有模型"。
 	// 现在处理器就是字段本身，这种组合不存在。
-	manifest func(root string) (items, orphans []Item, errs []string)
+	manifest func(root string) (items, orphans, inProgress []Item, errs []string)
 }
 
 // KV 是一条附加信息。
@@ -105,6 +105,12 @@ type Result struct {
 	Items []Item `json:"items"`
 	// Orphans 是没有被任何 manifest 引用的 blob（只有 ollama 有这个概念）。
 	Orphans []Item `json:"orphans,omitempty"`
+	// InProgress 是 ollama 还没下完的文件（<digest>-partial 及其分片）。
+	//
+	// **与 Orphans 分开是必须的**：它们看着占了一大片盘，但删了会毁掉
+	// 用户正在进行的下载。实测拉 gpt-oss:20b 到一半时，它们曾被算进
+	// "可回收 12.85 GiB" —— 那是把"下到一半"当成了"没人要"。
+	InProgress []Item `json:"in_progress,omitempty"`
 	// Errs 是各目录的失败原因。**不中断整体** —— 本机 12 条路径里
 	// 通常只有一两条存在，目录不存在是常态不是错误，不进这里。
 	Errs []string `json:"errs,omitempty"`
@@ -198,10 +204,11 @@ func Scan(ctx context.Context, opts Options) Result {
 			continue
 		}
 		if p.manifest != nil {
-			items, orphans, errs := p.manifest(dir)
+			items, orphans, inProgress, errs := p.manifest(dir)
 			res.Errs = append(res.Errs, errs...)
 			res.Items = append(res.Items, items...)
 			res.Orphans = append(res.Orphans, orphans...)
+			res.InProgress = append(res.InProgress, inProgress...)
 			continue
 		}
 		items, err := scanDir(ctx, dir, p.Source)

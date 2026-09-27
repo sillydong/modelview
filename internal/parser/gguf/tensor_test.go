@@ -9,6 +9,8 @@ import (
 	"slices"
 	"testing"
 
+	"strings"
+
 	"github.com/sillydong/modelview/internal/model"
 	"github.com/sillydong/modelview/internal/testutil"
 )
@@ -194,6 +196,11 @@ func TestTensorByteSize_覆盖全部类型码(t *testing.T) {
 		{25, "I16", model.DtypeI16, 2, 1},
 		{26, "I32", model.DtypeI32, 4, 1},
 		{27, "I64", model.DtypeI64, 8, 1},
+
+		// MXFP4 / NVFP4：4 位浮点块格式，本工具不解码但算得出占用大小。
+		// 17 = 32 个权重一块、36 = 64 个权重一块（ggml 的 type_size）。
+		{39, "MXFP4", model.DtypeMXFP4, 17, 32},
+		{40, "NVFP4", model.DtypeNVFP4, 36, 64},
 
 		// 量化（块 32）：2(d) + [scale/min/qh] + qs
 		{2, "Q4_0", model.DtypeQ4_0, 2 + 16, qk4},
@@ -428,6 +435,14 @@ func findBlob(prefix string) string {
 	}
 	for _, e := range entries {
 		if len(e.Name()) >= len(prefix) && e.Name()[:len(prefix)] == prefix {
+			// 跳过没下完的 —— 前缀匹配**会命中** <digest>-partial，
+			// 拿它当语料测出来的结论是假的
+			//
+			// 判据与 discover.IsInProgressBlob 相同，但这里不能 import 它：
+			// discover → parser → parser/gguf 会成环。改一边记得改另一边
+			if strings.Contains(e.Name(), "-partial") {
+				continue
+			}
 			return filepath.Join(dir, e.Name())
 		}
 	}
