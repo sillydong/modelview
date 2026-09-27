@@ -69,12 +69,14 @@ func run() error {
 	}
 
 	// 无参数或显式 scan 都进模型库。
-	// ④b 会把这里换成 TUI；现在先给非交互输出
+	//
+	// **--json 走非交互**：JSON 是一个整体，不能流式拼，
+	// 更不该在管道里弹出一个 TUI（那会把 ANSI 转义混进 jq 的输入）。
 	if flag.NArg() == 0 || flag.Arg(0) == "scan" {
-		if !*asJSON {
-			fmt.Fprintln(os.Stderr, "提示：交互界面在计划 ④b；当前为列表输出")
+		if *asJSON {
+			return runScan(context.Background(), true)
 		}
-		return runScan(context.Background(), *asJSON)
+		return runTUI()
 	}
 
 	// **这里没有"缺少参数"的分支**：NArg()==0 已经在上面走了 scan

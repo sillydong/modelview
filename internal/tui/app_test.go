@@ -14,6 +14,7 @@ import (
 // 而放在生产代码里会让"这个类型还有别的实现吗"变成一个要翻代码的问题。
 type fakeView struct{ title string }
 
+func (f fakeView) Init() tea.Cmd                  { return nil }
 func (f fakeView) Update(tea.Msg) (View, tea.Cmd) { return f, nil }
 func (f fakeView) View(w, h int) string           { return f.title }
 func (f fakeView) Help() []string                 { return nil }
@@ -145,6 +146,7 @@ func TestApp_没有尺寸时也能渲染(t *testing.T) {
 // viewWithBody 是内容可定制的测试视图（fakeView 只有一行）。
 type viewWithBody struct{ body string }
 
+func (v viewWithBody) Init() tea.Cmd                  { return nil }
 func (v viewWithBody) Update(tea.Msg) (View, tea.Cmd) { return v, nil }
 func (v viewWithBody) View(w, h int) string           { return v.body }
 func (v viewWithBody) Help() []string                 { return nil }
@@ -187,9 +189,56 @@ func TestApp_标题与帮助栏超宽被截断(t *testing.T) {
 
 type longTitleView struct{}
 
+func (longTitleView) Init() tea.Cmd                  { return nil }
 func (longTitleView) Update(tea.Msg) (View, tea.Cmd) { return longTitleView{}, nil }
 func (longTitleView) View(w, h int) string           { return "内容" }
 func (longTitleView) Help() []string {
 	return []string{strings.Repeat("很长的帮助文本", 10)}
 }
 func (longTitleView) Title() string { return strings.Repeat("超长标题", 20) }
+
+// **Init 必须真的被调用** —— 忘了接上的表现是"界面永远停在初始状态"，
+// 而所有直接调 Update 的单元测试都是绿的。
+//
+// 实测：Library.Init 里发起扫描的那条命令从来没被执行过，
+// 屏幕停在"正在扫描模型目录…"，是 pty 里跑真终端才看出来的。
+func TestApp_Init会被调用(t *testing.T) {
+	ran := false
+	m := New(initTrackingView{onInit: func() { ran = true }}, 0)
+
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Model.Init() 返回 nil —— 根视图的初始化任务没被接上")
+	}
+	cmd()
+	if !ran {
+		t.Error("根视图的 Init() 没有被调用")
+	}
+}
+
+// push 进来的视图也要跑它的 Init —— 不跑的话"进模型视图"会停在"正在解析…"
+func TestApp_push的视图也会跑Init(t *testing.T) {
+	ran := false
+	m := New(fakeView{title: "根"}, 0)
+	_, cmd := m.Update(pushMsg{v: initTrackingView{onInit: func() { ran = true }}})
+	if cmd == nil {
+		t.Fatal("pushMsg 没有返回新视图的 Init 命令")
+	}
+	cmd()
+	if !ran {
+		t.Error("push 进来的视图的 Init() 没有被调用")
+	}
+}
+
+// initTrackingView 记录自己的 Init 被调用过。
+type initTrackingView struct{ onInit func() }
+
+func (v initTrackingView) Init() tea.Cmd {
+	return func() tea.Msg {
+		v.onInit()
+		return nil
+	}
+}
+func (v initTrackingView) Update(tea.Msg) (View, tea.Cmd) { return v, nil }
+func (v initTrackingView) View(w, h int) string           { return "跟踪" }
+func (v initTrackingView) Help() []string                 { return nil }

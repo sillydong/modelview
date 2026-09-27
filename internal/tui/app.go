@@ -21,6 +21,14 @@ import (
 // 根 Model 只负责栈与分发 —— 把分发写成一个巨大的 switch
 // 会让每加一个视图就改一次那个 switch。
 type View interface {
+	// Init 返回这一层**首次显示时要跑的异步任务**，没有就返回 nil。
+	//
+	// **忘了把它接上，界面会永远停在初始状态而没有任何报错** ——
+	// 实测：Library.Init 里发起扫描的那条命令从来没被执行过，
+	// 屏幕一直停在"正在扫描模型目录…"，而所有单元测试都是绿的
+	//（它们直接调 Update，不经过 bubbletea 的运行时）。
+	// 是 pty 里跑真终端才看出来的。
+	Init() tea.Cmd
 	Update(msg tea.Msg) (View, tea.Cmd)
 	// View 按给定的内容区尺寸渲染。**尺寸由参数传入而不是从 Model 读**：
 	// 这样测试可以拿 80×24 直接调，不必模拟一个终端。
@@ -69,7 +77,10 @@ func New(root View, heightAdj int) Model {
 	}
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+// Init 跑栈底视图的初始化任务（模型库的扫描就是从这里发起的）。
+//
+// 只跑栈底的：上层视图是用户"点进去"的，它们的 Init 在 pushMsg 时跑。
+func (m Model) Init() tea.Cmd { return m.stack[0].Init() }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -94,7 +105,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pushMsg:
 		m.stack = append(m.stack, msg.v)
-		return m, nil
+		// **新压进来的视图也要跑它的 Init** ——
+		// 不跑的话"进模型视图"会永远停在"正在解析…"
+		return m, msg.v.Init()
 
 	case popMsg:
 		if len(m.stack) > 1 {

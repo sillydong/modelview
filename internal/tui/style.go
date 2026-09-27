@@ -15,4 +15,21 @@ var (
 
 	// 底部帮助栏
 	styleHelp = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	// 左栏选中项
+	styleSelected = lipgloss.NewStyle().
+			Background(lipgloss.Color("237")).
+			Bold(true)
+
+	// 次要信息（来源、未完成下载那一行、空结果的目录清单）
+	styleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	// 段落标题（"孤儿 blob"）
+	styleSection = lipgloss.NewStyle().Bold(true)
+
+	// 告警（读失败、未完成的下载）
+	styleWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
+	// 提示（"正在读取格式与参数量…"）
+	styleHint = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true)
 )
