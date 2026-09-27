@@ -20,11 +20,17 @@ const (
 )
 
 // MetaKV 是一条元数据。保持原始顺序，不做过滤或截断。
+//
+// **没有"关联的速查表条目"字段**。曾经有一个 `Ref`，由解析器按 key 填
+// 一个硬编码的表名；那张表后来真的建出来时用的是另一套 ID，
+// 于是这个字段指向的全是空气，而它已经在 --json 里对外了。
+//
+// 关联应当由展示层现算：拿到 key 调 `ref.LookupKey(k)`，它知道
+// 精确键与按后缀匹配两套规则。解析器不该知道速查表的内部 ID。
 type MetaKV struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`         // 已格式化为可读字符串
 	Raw   any    `json:"raw,omitempty"` // 原始值，供程序化消费
-	Ref   string `json:"ref,omitempty"` // 关联的速查表条目 ID，空表示无
 }
 
 // QuantInfo 是一个已量化张量的块级诊断，由 analyze 包懒加载填充。

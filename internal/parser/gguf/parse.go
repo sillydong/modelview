@@ -106,7 +106,6 @@ func Parse(path string) (*model.Model, error) {
 			Key:   kv.Key,
 			Value: formatValue(kv.Value),
 			Raw:   rawForJSON(kv.Value),
-			Ref:   refFor(kv.Key),
 		})
 		if kv.Key == "general.architecture" {
 			if s, ok := kv.Value.(string); ok {
@@ -183,17 +182,5 @@ func rawForJSON(v any) any {
 		return nil
 	default:
 		return v
-	}
-}
-
-// refFor 返回元数据键关联的速查表条目 ID（计划 ④ 填充表数据）。
-func refFor(key string) string {
-	switch key {
-	case "general.file_type":
-		return "quant-schemes"
-	case "general.architecture", "general.alignment":
-		return "gguf-keys"
-	default:
-		return ""
 	}
 }

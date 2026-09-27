@@ -237,23 +237,26 @@ func TestParse_形状溢出报错(t *testing.T) {
 	}
 }
 
-// 反向门禁：dtypeByCode 里能映射出的每个类型都必须能取到每元素字节数。
+// 反向门禁：safetensors 能映射出的每个类型都必须能取到每元素字节数。
 //
 // parse.go 在取不到字节数时会直接报错（fail-closed）。如果某个 safetensors
 // 合法的 dtype 映射到了量化类型或没有字节数的类型，那个文件就会**解析失败**
 // 而不是给出结果 —— 这条测试让这种矛盾在加映射时就暴露，而不是等到用户手里。
-func TestDtypeByCode_全部可取字节数(t *testing.T) {
-	for code, d := range dtypeByCode {
+func TestSafetensorsDtypes_全部可取字节数(t *testing.T) {
+	for _, d := range model.SafetensorsDtypes() {
 		if _, ok := d.ByteSize(); !ok {
 			t.Errorf("dtype %q 映射到 %s，但它没有每元素字节数；该类型的文件会解析失败",
-				code, d)
+				string(d), d)
 		}
 	}
 }
 
 // 正向门禁：规范里的 dtype 不能漏。
 // 漏一个不会报错，只会让该类型的文件报"未知 dtype"，属于静默能力缺失。
-func TestDtypeByCode_规范取值齐全(t *testing.T) {
+//
+// 下面的清单是**独立抄自规范**的，不是从 model 里读出来的 ——
+// 两边都从同一个地方取的话，这份检查就成了同义反复。
+func TestSafetensorsDtypes_规范取值齐全(t *testing.T) {
 	// safetensors 规范定义的完整取值列表
 	want := []string{
 		"BOOL", "U8", "I8", "F8_E5M2", "F8_E4M3",
@@ -266,8 +269,8 @@ func TestDtypeByCode_规范取值齐全(t *testing.T) {
 			t.Errorf("规范里的 dtype %q 未收录: %v", code, err)
 		}
 	}
-	if len(dtypeByCode) != len(want) {
-		t.Errorf("dtypeByCode 有 %d 项，规范是 %d 项 —— 多出来的要确认是否真的存在",
-			len(dtypeByCode), len(want))
+	if got := model.SafetensorsDtypes(); len(got) != len(want) {
+		t.Errorf("Dtype 表里有 %d 项 safetensors 取值，规范是 %d 项 —— "+
+			"多出来的要确认是否真的存在", len(got), len(want))
 	}
 }

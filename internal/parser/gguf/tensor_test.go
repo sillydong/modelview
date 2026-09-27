@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sillydong/modelview/internal/model"
+	"github.com/sillydong/modelview/internal/testutil"
 )
 
 func TestReadTensorInfos(t *testing.T) {
@@ -238,7 +239,11 @@ func TestTensorByteSize_覆盖全部类型码(t *testing.T) {
 
 	// 这张表必须覆盖所有能算出占用大小的类型码 —— 新增类型时同步补进来。
 	blocky := 0
-	for code := range ggmlTypeCode {
+	for d := range model.AllDtypes() {
+		code, ok := d.GGMLCode()
+		if !ok {
+			continue // 没有 GGML 类型码的（safetensors 专有）跳过
+		}
 		dt, ok := ggmlDtype(code)
 		if !ok {
 			continue
@@ -317,6 +322,13 @@ func TestBlockTable_与真实文件吻合(t *testing.T) {
 		"sha256-7121486771cbfe2", // gemma4:26b     + Q5_0/Q8_0
 	}
 
+	// 语料整个不在（换台机器）时跳过；语料在、清单里某个文件却不在时判失败。
+	// 两者的区别很重要：前者是"没得验"，后者是"以为验了其实没有"。
+	if blobsDir() == "" {
+		testutil.RequireReal(t, "~/.ollama/models/blobs",
+			"—— 块表与真实文件布局吻合的回归（张量不重叠、无空隙、排到文件末尾）")
+	}
+
 	covered := map[model.Dtype]bool{}
 	for _, prefix := range blobs {
 		path := findBlob(prefix)
@@ -391,13 +403,25 @@ func TestBlockTable_与真实文件吻合(t *testing.T) {
 	}
 }
 
-// findBlob 在 ollama 的 blobs 目录里按前缀找文件；找不到返回空串。
-func findBlob(prefix string) string {
+// blobsDir 返回 ollama 的 blobs 目录；不存在返回空串。
+func blobsDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
 	dir := filepath.Join(home, ".ollama", "models", "blobs")
+	if _, err := os.Stat(dir); err != nil {
+		return ""
+	}
+	return dir
+}
+
+// findBlob 在 ollama 的 blobs 目录里按前缀找文件；找不到返回空串。
+func findBlob(prefix string) string {
+	dir := blobsDir()
+	if dir == "" {
+		return ""
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""

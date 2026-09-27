@@ -40,20 +40,47 @@ func run() error {
 				"找出被压得最狠的子块，不受这个上限约束")
 	)
 	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, "用法: modelview [选项] <模型文件>\n\n")
+		fmt.Fprint(os.Stderr, "用法: modelview [选项] <模型文件>\n"+
+			"      modelview [选项] scan        扫描本机模型目录（无参数时也是它）\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	// **位置参数里出现 "-" 开头的东西 = 选项写在子命令后面了**。
+	//
+	// Go 的 flag 遇到第一个非选项参数就停止解析，于是
+	// `modelview scan --json` 里的 --json **被静默丢掉**，
+	// 打出来的是人类可读的列表 —— 脚本把它管道给 jq 才报错，
+	// 而报错的地方离原因很远。实测过这个行为。
+	//
+	// 宁可报错也不要猜：写 `--` 可以显式终止选项解析。
+	for _, a := range flag.Args() {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			flag.Usage()
+			return fmt.Errorf("选项 %q 写在位置参数后面了，不会被解析；"+
+				"选项要写在前面，例如 modelview --json scan", a)
+		}
+	}
 
 	if *version {
 		fmt.Println("modelview dev")
 		return nil
 	}
 
-	if flag.NArg() < 1 {
-		flag.Usage()
-		return fmt.Errorf("缺少模型文件参数")
+	// 无参数或显式 scan 都进模型库。
+	// ④b 会把这里换成 TUI；现在先给非交互输出
+	if flag.NArg() == 0 || flag.Arg(0) == "scan" {
+		if !*asJSON {
+			fmt.Fprintln(os.Stderr, "提示：交互界面在计划 ④b；当前为列表输出")
+		}
+		return runScan(context.Background(), *asJSON)
 	}
+
+	// **这里没有"缺少参数"的分支**：NArg()==0 已经在上面走了 scan
+	// （无参数 = 扫模型库），所以走到这里必然至少有一个位置参数。
+	// 原先那段 `if flag.NArg() < 1` 是死代码 —— 一段永不执行的守卫
+	// 读起来像"缺参数已经处理了"，实际永远不会触发。
+	// 与 scanLine 里那段被删掉的兜底是同一类。
 
 	m, err := parser.Parse(flag.Arg(0))
 	if err != nil {

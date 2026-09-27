@@ -8,43 +8,20 @@ import (
 	"github.com/sillydong/modelview/internal/model"
 )
 
-// ggmlTypeCode 把 GGML 类型码映射到 model.Dtype。
-// 未知码返回 ok=false，调用方应保留原始码并在界面上标注为未知。
-var ggmlTypeCode = map[uint32]model.Dtype{
-	0:  model.DtypeF32,
-	1:  model.DtypeF16,
-	2:  model.DtypeQ4_0,
-	3:  model.DtypeQ4_1,
-	6:  model.DtypeQ5_0,
-	7:  model.DtypeQ5_1,
-	8:  model.DtypeQ8_0,
-	9:  model.DtypeQ8_1,
-	10: model.DtypeQ2K,
-	11: model.DtypeQ3K,
-	12: model.DtypeQ4K,
-	13: model.DtypeQ5K,
-	14: model.DtypeQ6K,
-	15: model.DtypeQ8K,
-	16: model.DtypeIQ2XXS,
-	17: model.DtypeIQ2XS,
-	18: model.DtypeIQ3XXS,
-	19: model.DtypeIQ1S,
-	20: model.DtypeIQ4NL,
-	21: model.DtypeIQ3S,
-	22: model.DtypeIQ2S,
-	23: model.DtypeIQ4XS,
-	24: model.DtypeI8,
-	25: model.DtypeI16,
-	26: model.DtypeI32,
-	27: model.DtypeI64,
-	28: model.DtypeF64,
-	29: model.DtypeIQ1M,
-	30: model.DtypeBF16,
-}
-
+// ggmlDtype 把 GGML 类型码映射到 model.Dtype。
+//
+// 表本身在 model 里（类型码是 Dtype 自己的属性，见表里的 GGMLCode），
+// 这里只是按码反查 —— 两处各存一份的话，"码 12 是 Q4_K 还是 Q6_K"
+// 这种错不会有任何东西编译失败。
+//
+// 线性扫 30 来项、只在解析头部时调用，不值得为它建索引。
 func ggmlDtype(code uint32) (model.Dtype, bool) {
-	d, ok := ggmlTypeCode[code]
-	return d, ok
+	for d := range model.AllDtypes() {
+		if c, ok := d.GGMLCode(); ok && c == code {
+			return d, true
+		}
+	}
+	return model.DtypeUnknown, false
 }
 
 // maxArrayPrint 是数组在字符串形式里最多打印多少个元素。

@@ -1,5 +1,7 @@
 package model
 
+import "iter"
+
 // Dtype 是与文件格式无关的数据类型。
 type Dtype string
 
@@ -63,53 +65,64 @@ type dtypeProps struct {
 	BlockBytes int64
 	// IsFloat 表示可按 IEEE 浮点解码。
 	IsFloat bool
+
+	// GGMLCode 是这个类型在 GGUF 里的类型码（ggml_type 的取值）。
+	//
+	// **-1 表示没有类型码**。哨兵值必须显式且唯一：0 是合法的码
+	//（F32），拿它当"没有"会让 DtypeUnknown 被当成 F32 ——
+	// 一个不认识的类型悄悄变成"最普通的那个"，编译器和测试都不会响。
+	//
+	// 它放在这里而不是 parser/gguf 里：类型码是 Dtype 自己的属性，
+	// 而速查表要按码列出全部类型 —— 让数据包去 import 一个解析器
+	// 只为拿一张常量表是本末倒置。
+	GGMLCode int
 }
 
 var dtypeTable = map[Dtype]dtypeProps{
-	DtypeF64:    {BitsPerWeight: 64, IsFloat: true, BlockSize: 1, BlockBytes: 8},
-	DtypeF32:    {BitsPerWeight: 32, IsFloat: true, BlockSize: 1, BlockBytes: 4},
-	DtypeF16:    {BitsPerWeight: 16, IsFloat: true, BlockSize: 1, BlockBytes: 2},
-	DtypeBF16:   {BitsPerWeight: 16, IsFloat: true, BlockSize: 1, BlockBytes: 2},
-	DtypeF8E4M3: {BitsPerWeight: 8, IsFloat: true, BlockSize: 1, BlockBytes: 1},
-	DtypeF8E5M2: {BitsPerWeight: 8, IsFloat: true, BlockSize: 1, BlockBytes: 1},
+	DtypeF64:    {BitsPerWeight: 64, IsFloat: true, BlockSize: 1, BlockBytes: 8, GGMLCode: 28},
+	DtypeF32:    {BitsPerWeight: 32, IsFloat: true, BlockSize: 1, BlockBytes: 4, GGMLCode: 0},
+	DtypeF16:    {BitsPerWeight: 16, IsFloat: true, BlockSize: 1, BlockBytes: 2, GGMLCode: 1},
+	DtypeBF16:   {BitsPerWeight: 16, IsFloat: true, BlockSize: 1, BlockBytes: 2, GGMLCode: 30},
+	DtypeF8E4M3: {BitsPerWeight: 8, IsFloat: true, BlockSize: 1, BlockBytes: 1, GGMLCode: -1},
+	DtypeF8E5M2: {BitsPerWeight: 8, IsFloat: true, BlockSize: 1, BlockBytes: 1, GGMLCode: -1},
 
-	DtypeI64:  {BitsPerWeight: 64, BlockSize: 1, BlockBytes: 8},
-	DtypeI32:  {BitsPerWeight: 32, BlockSize: 1, BlockBytes: 4},
-	DtypeI16:  {BitsPerWeight: 16, BlockSize: 1, BlockBytes: 2},
-	DtypeI8:   {BitsPerWeight: 8, BlockSize: 1, BlockBytes: 1},
-	DtypeU64:  {BitsPerWeight: 64, BlockSize: 1, BlockBytes: 8},
-	DtypeU32:  {BitsPerWeight: 32, BlockSize: 1, BlockBytes: 4},
-	DtypeU16:  {BitsPerWeight: 16, BlockSize: 1, BlockBytes: 2},
-	DtypeU8:   {BitsPerWeight: 8, BlockSize: 1, BlockBytes: 1},
-	DtypeBool: {BitsPerWeight: 8, BlockSize: 1, BlockBytes: 1},
+	DtypeI64:  {BitsPerWeight: 64, BlockSize: 1, BlockBytes: 8, GGMLCode: 27},
+	DtypeI32:  {BitsPerWeight: 32, BlockSize: 1, BlockBytes: 4, GGMLCode: 26},
+	DtypeI16:  {BitsPerWeight: 16, BlockSize: 1, BlockBytes: 2, GGMLCode: 25},
+	DtypeI8:   {BitsPerWeight: 8, BlockSize: 1, BlockBytes: 1, GGMLCode: 24},
+	DtypeU64:  {BitsPerWeight: 64, BlockSize: 1, BlockBytes: 8, GGMLCode: -1},
+	DtypeU32:  {BitsPerWeight: 32, BlockSize: 1, BlockBytes: 4, GGMLCode: -1},
+	DtypeU16:  {BitsPerWeight: 16, BlockSize: 1, BlockBytes: 2, GGMLCode: -1},
+	DtypeU8:   {BitsPerWeight: 8, BlockSize: 1, BlockBytes: 1, GGMLCode: -1},
+	DtypeBool: {BitsPerWeight: 8, BlockSize: 1, BlockBytes: 1, GGMLCode: -1},
 
-	DtypeQ4_0: {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 32, BlockBytes: 18},
-	DtypeQ4_1: {BitsPerWeight: 5.0, IsQuantized: true, BlockSize: 32, BlockBytes: 20},
-	DtypeQ5_0: {BitsPerWeight: 5.5, IsQuantized: true, BlockSize: 32, BlockBytes: 22},
-	DtypeQ5_1: {BitsPerWeight: 6.0, IsQuantized: true, BlockSize: 32, BlockBytes: 24},
-	DtypeQ8_0: {BitsPerWeight: 8.5, IsQuantized: true, BlockSize: 32, BlockBytes: 34},
-	DtypeQ8_1: {BitsPerWeight: 9.0, IsQuantized: true, BlockSize: 32, BlockBytes: 36},
+	DtypeQ4_0: {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 32, BlockBytes: 18, GGMLCode: 2},
+	DtypeQ4_1: {BitsPerWeight: 5.0, IsQuantized: true, BlockSize: 32, BlockBytes: 20, GGMLCode: 3},
+	DtypeQ5_0: {BitsPerWeight: 5.5, IsQuantized: true, BlockSize: 32, BlockBytes: 22, GGMLCode: 6},
+	DtypeQ5_1: {BitsPerWeight: 6.0, IsQuantized: true, BlockSize: 32, BlockBytes: 24, GGMLCode: 7},
+	DtypeQ8_0: {BitsPerWeight: 8.5, IsQuantized: true, BlockSize: 32, BlockBytes: 34, GGMLCode: 8},
+	DtypeQ8_1: {BitsPerWeight: 9.0, IsQuantized: true, BlockSize: 32, BlockBytes: 36, GGMLCode: 9},
 	// 以下位宽由块字节数推导：bits = BlockBytes × 8 / BlockSize。
 	// 数值经真实 GGUF 文件反推验证（见 gguf 包的 TestBlockTable_与真实文件吻合）。
 	// 块字节数原先在 parser/gguf 里按 GGML 类型码另存一份，现已收敛到本表。
-	DtypeQ2K: {BitsPerWeight: 2.625, IsQuantized: true, BlockSize: 256, BlockBytes: 84},
-	DtypeQ3K: {BitsPerWeight: 3.4375, IsQuantized: true, BlockSize: 256, BlockBytes: 110},
-	DtypeQ4K: {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 256, BlockBytes: 144},
-	DtypeQ5K: {BitsPerWeight: 5.5, IsQuantized: true, BlockSize: 256, BlockBytes: 176},
-	DtypeQ6K: {BitsPerWeight: 6.5625, IsQuantized: true, BlockSize: 256, BlockBytes: 210},
-	DtypeQ8K: {BitsPerWeight: 9.125, IsQuantized: true, BlockSize: 256, BlockBytes: 292},
+	DtypeQ2K: {BitsPerWeight: 2.625, IsQuantized: true, BlockSize: 256, BlockBytes: 84, GGMLCode: 10},
+	DtypeQ3K: {BitsPerWeight: 3.4375, IsQuantized: true, BlockSize: 256, BlockBytes: 110, GGMLCode: 11},
+	DtypeQ4K: {BitsPerWeight: 4.5, IsQuantized: true, BlockSize: 256, BlockBytes: 144, GGMLCode: 12},
+	DtypeQ5K: {BitsPerWeight: 5.5, IsQuantized: true, BlockSize: 256, BlockBytes: 176, GGMLCode: 13},
+	DtypeQ6K: {BitsPerWeight: 6.5625, IsQuantized: true, BlockSize: 256, BlockBytes: 210, GGMLCode: 14},
+	DtypeQ8K: {BitsPerWeight: 9.125, IsQuantized: true, BlockSize: 256, BlockBytes: 292, GGMLCode: 15},
 
 	// IQ 系列（i-quants）的块结构复杂且未在本项目中验证，
 	// 因此不给位宽 —— 计算占用大小时会明确报"未收录"，而不是给出可能错误的数字。
-	DtypeIQ2XXS: {IsQuantized: true, BlockSize: 256},
-	DtypeIQ2XS:  {IsQuantized: true, BlockSize: 256},
-	DtypeIQ3XXS: {IsQuantized: true, BlockSize: 256},
-	DtypeIQ1S:   {IsQuantized: true, BlockSize: 256},
-	DtypeIQ4NL:  {IsQuantized: true, BlockSize: 32},
-	DtypeIQ3S:   {IsQuantized: true, BlockSize: 256},
-	DtypeIQ2S:   {IsQuantized: true, BlockSize: 256},
-	DtypeIQ4XS:  {IsQuantized: true, BlockSize: 256},
-	DtypeIQ1M:   {IsQuantized: true, BlockSize: 256},
+	DtypeIQ2XXS: {IsQuantized: true, BlockSize: 256, GGMLCode: 16},
+	DtypeIQ2XS:  {IsQuantized: true, BlockSize: 256, GGMLCode: 17},
+	DtypeIQ3XXS: {IsQuantized: true, BlockSize: 256, GGMLCode: 18},
+	DtypeIQ1S:   {IsQuantized: true, BlockSize: 256, GGMLCode: 19},
+	DtypeIQ4NL:  {IsQuantized: true, BlockSize: 32, GGMLCode: 20},
+	DtypeIQ3S:   {IsQuantized: true, BlockSize: 256, GGMLCode: 21},
+	DtypeIQ2S:   {IsQuantized: true, BlockSize: 256, GGMLCode: 22},
+	DtypeIQ4XS:  {IsQuantized: true, BlockSize: 256, GGMLCode: 23},
+	DtypeIQ1M:   {IsQuantized: true, BlockSize: 256, GGMLCode: 29},
 }
 
 // Props 返回该类型的存储属性。未知类型返回零值。
@@ -126,10 +139,72 @@ func (d Dtype) IsQuantized() bool { return dtypeTable[d].IsQuantized }
 // IsFloat 表示该类型是否为 IEEE 浮点。
 func (d Dtype) IsFloat() bool { return dtypeTable[d].IsFloat }
 
+// GGMLCode 返回这个类型在 GGUF 里的类型码。
+//
+// 第二个返回值为 false 表示**没有类型码**，与"类型码是 0"是两回事 ——
+// 0 是 F32 的合法码。调用方不能拿零值当"没有"。
+func (d Dtype) GGMLCode() (uint32, bool) {
+	p, ok := dtypeTable[d]
+	if !ok || p.GGMLCode < 0 {
+		return 0, false
+	}
+	return uint32(p.GGMLCode), true
+}
+
+// AllDtypes 遍历所有已收录的类型，顺序不保证。
+//
+// 导出是为了让**按属性反查**的调用方（如 parser 按 GGML 类型码反查，
+// 速查表按位宽排序）不必自己维护一份平行的清单 ——
+// 那正是本次收敛要消灭的东西。
+func AllDtypes() iter.Seq[Dtype] {
+	return func(yield func(Dtype) bool) {
+		for d := range dtypeTable {
+			if !yield(d) {
+				return
+			}
+		}
+	}
+}
+
 // Known 表示该类型是否在位宽表内。
 func (d Dtype) Known() bool {
 	_, ok := dtypeTable[d]
 	return ok
+}
+
+// safetensorsDtypes 是 safetensors 头部 dtype 字段的**全部合法取值**，
+// 顺序即规范里的书写顺序。
+//
+// 这些拼写与本包的 Dtype 字面量恰好相同，但那是巧合而非契约：
+// 所以这里写全，而不是用 `Dtype(code).Known()` 去推导 ——
+// 推导会把 Q4_K 这种 safetensors 里根本不存在的名字也判为合法，
+// 于是"文件头部写错了"这个真实的错误会被静默接受。
+//
+// 放在 model 而不是某个解析器里：解析器（认识它）与速查表（展示它）
+// 都要用同一份清单，各写一份的话，将来 safetensors 加一个新类型时
+// 必然只改一处 —— 而漂移的表现是速查表里少一行，没有任何东西会红。
+var safetensorsDtypes = []Dtype{
+	DtypeF64, DtypeF32, DtypeF16, DtypeBF16, DtypeF8E4M3, DtypeF8E5M2,
+	DtypeI64, DtypeI32, DtypeI16, DtypeI8,
+	DtypeU64, DtypeU32, DtypeU16, DtypeU8,
+	DtypeBool,
+}
+
+// SafetensorsDtypes 按规范顺序返回 safetensors 支持的全部 dtype。
+//
+// 返回副本：调用方拿到的是自己的切片，改它不会污染这张表。
+func SafetensorsDtypes() []Dtype {
+	return append([]Dtype(nil), safetensorsDtypes...)
+}
+
+// DtypeFromSafetensors 把 safetensors 头部的 dtype 字符串映射到 Dtype。
+func DtypeFromSafetensors(code string) (Dtype, bool) {
+	for _, d := range safetensorsDtypes {
+		if string(d) == code {
+			return d, true
+		}
+	}
+	return DtypeUnknown, false
 }
 
 // ByteSize 返回每元素占用的字节数。

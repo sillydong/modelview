@@ -40,7 +40,18 @@ func TestGGMLDtype(t *testing.T) {
 //
 // 遍历 map 而不是遍历 0..N —— 固定上界会在新增更大的类型码时静默失效。
 func TestGGMLDtype_全部在model表内(t *testing.T) {
-	for code, dt := range ggmlTypeCode {
+	// 表本身现在在 model 里，这里遍历它 —— 本测试的意义也随之变了：
+	// 从"parser 的码表与 model 的位宽表对得上"变成"按码反查能查回来"。
+	// 断言没放宽：仍然要求每个码都能反查出**同一个**类型。
+	for dt := range model.AllDtypes() {
+		code, ok := dt.GGMLCode()
+		if !ok {
+			continue
+		}
+		back, ok := ggmlDtype(code)
+		if !ok || back != dt {
+			t.Errorf("类型码 %d 反查得到 %q，want %q", code, back, dt)
+		}
 		if !dt.Known() {
 			t.Errorf("类型码 %d → %q 在 model.dtypeTable 中缺失", code, dt)
 		}
@@ -54,7 +65,11 @@ func TestGGMLDtype_全部在model表内(t *testing.T) {
 // 那会让"位宽表有、块表没有"的新增类型静默通过，
 // 结果是该类型所有张量的 byte_size 恒为 0，而没有任何测试失败。
 func TestBlockTable_声明位宽的类型必须在块表(t *testing.T) {
-	for code, dt := range ggmlTypeCode {
+	for dt := range model.AllDtypes() {
+		code, hasCode := dt.GGMLCode()
+		if !hasCode {
+			continue // safetensors 专有的 dtype，GGUF 里不出现
+		}
 		if dt.BitsPerWeight() == 0 {
 			continue // IQ 系列故意不声明位宽
 		}
@@ -69,7 +84,11 @@ func TestBlockTable_声明位宽的类型必须在块表(t *testing.T) {
 // 反向闸门之二：未声明位宽的类型（IQ 系列）必须也取不到块字节数 ——
 // 否则算出的占用大小会与展示的位宽矛盾。
 func TestBlockTable_未声明位宽的类型取不到块字节(t *testing.T) {
-	for code, dt := range ggmlTypeCode {
+	for dt := range model.AllDtypes() {
+		code, hasCode := dt.GGMLCode()
+		if !hasCode {
+			continue
+		}
 		if dt.BitsPerWeight() != 0 {
 			continue
 		}

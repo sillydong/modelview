@@ -267,7 +267,7 @@ func TestParse_未知类型码产生告警(t *testing.T) {
 	b.str("weird_tensor")
 	b.u32(1)
 	b.u64(256)
-	b.u32(999) // ggmlTypeCode 里没有这个码
+	b.u32(999) // 没有任何 Dtype 的 GGMLCode 是 999
 	b.u64(0)
 	b.raw(make([]byte, alignUp(int64(len(b.bytes())), 32)-int64(len(b.bytes()))))
 
