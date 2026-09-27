@@ -373,8 +373,13 @@ func (v ModelView) refHint() string {
 // 不补的话，右栏比左栏长的那几行会从第 0 列开始 ——
 // 实测概览里的"总参数 / 张量占用"两行就是这么错位的。
 func joinHorizontal(left, right string) string {
+	// **两边都要 TrimRight**：nav 与 body 都以 "\n" 结尾，
+	// 不裁的话会多出一个空行 —— 而那个空行会挤掉真正的内容
+	// （实测：metadata 自己算好了 12 行，join 出来是 13 行，
+	// 根视图再按高度截一刀，用户看到的是"还有 3 行没显示"，
+	// 而那句提示本该是"还有 54 条"）
 	ll := strings.Split(strings.TrimRight(left, "\n"), "\n")
-	rl := strings.Split(right, "\n")
+	rl := strings.Split(strings.TrimRight(right, "\n"), "\n")
 
 	// 左栏的显示宽度（不是字节数）
 	leftWidth := 0
@@ -388,8 +393,13 @@ func joinHorizontal(left, right string) string {
 	if len(rl) > n {
 		n = len(rl)
 	}
-	var sb strings.Builder
+	// **末尾不留换行**：留了的话按 "\n" 切会多出一个空元素，
+	// 而根视图的 padTo 就是这么数的 —— 多出来的那一行会把视图
+	// 自己算好的提示（"还有 N 条没显示"）挤掉，换成 padTo 的
+	// "还有 N 行没显示"。两个提示都说得通，但用户看到的是措辞更差的那个。
+	lines := make([]string, 0, n)
 	for i := range n {
+		var sb strings.Builder
 		if i < len(ll) {
 			sb.WriteString(ll[i])
 			if pad := leftWidth - lipgloss.Width(ll[i]); pad > 0 {
@@ -402,9 +412,9 @@ func joinHorizontal(left, right string) string {
 		if i < len(rl) {
 			sb.WriteString(rl[i])
 		}
-		sb.WriteString("\n")
+		lines = append(lines, sb.String())
 	}
-	return sb.String()
+	return strings.Join(lines, "\n")
 }
 
 // displayName 是标题栏里显示的名字：优先用模型库给的名字，

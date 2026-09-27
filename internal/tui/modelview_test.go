@@ -2,9 +2,12 @@ package tui
 
 import (
 	"errors"
+
 	"fmt"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/sillydong/modelview/internal/model"
 )
@@ -387,5 +390,51 @@ func TestModelView_左栏用完后右栏仍对齐(t *testing.T) {
 	if first != last {
 		t.Errorf("右栏第 1 行从 %d 列开始、最后一行从 %d 列开始 —— 超出左栏的行没对齐",
 			first, last)
+	}
+}
+
+// **整个视图渲染出来必须恰好占满给定的高度**，且不超宽。
+//
+// 这条从根 Model 走一遍：各层自己算好的行数要是与根视图的理解不一致，
+// 用户看到的就是被多截一刀、或者底部浮空。
+// 实测踩过一次：joinHorizontal 只 TrimRight 了左栏，右栏末尾那个换行
+// 让结果多出一行，于是元数据自己算好的"还有 54 条"被根视图的
+// "还有 3 行"顶掉了 —— 两个提示都说得通，但用户看到的是错的那个。
+func TestModelView_渲染恰好占满高度(t *testing.T) {
+	m := fakeModel()
+	for range 60 {
+		m.Metadata = append(m.Metadata, model.MetaKV{
+			Key: "gemma4.attention.sliding_window_pattern_x", Value: "v", Raw: true})
+	}
+	for _, sec := range []section{sectionOverview, sectionMetadata, sectionTensors} {
+		v := gotoSection(loadModelView(m), sec)
+		for _, h := range []int{8, 12, 20, 40} {
+			// **直接问视图要输出**，不经根视图。
+			//
+			// 经根视图是测不出问题的：padTo 永远把结果补齐或截到恰好 h 行，
+			// 所以"渲染出 h 行"这条断言恒真（变异验证确认过 ——
+			// 把右栏末尾的换行留回去、把元数据的裁剪关掉，它照样绿）。
+			//
+			// 真正的不变式是：**各层交给根视图的原始输出，
+			// 按 padTo 的计数方式（简单按 "\n" 切）不能超过高度** ——
+			// 超了就会被截，而截掉的是真实内容、补上的是"还有 N 行没显示"。
+			raw := v.View(100, h)
+			if n := len(strings.Split(raw, "\n")); n > h {
+				t.Errorf("栏目 %d、高度 %d：视图给了 %d 行，超出会被根视图截掉真实内容",
+					sec, h, n)
+			}
+			for i, l := range strings.Split(raw, "\n") {
+				if w := displayWidth(l); w > 100 {
+					t.Errorf("栏目 %d、高度 %d：第 %d 行宽 %d: %q", sec, h, i, w, l)
+				}
+			}
+
+			// 经根视图仍然要恰好占满（这是 padTo 的性质，顺带验一下）
+			root, _ := New(v).Update(tea.WindowSizeMsg{Width: 100, Height: h})
+			if out := root.(Model).View(); len(strings.Split(out, "\n")) != h {
+				t.Errorf("栏目 %d、高度 %d：根视图渲染出 %d 行",
+					sec, h, len(strings.Split(out, "\n")))
+			}
+		}
 	}
 }
