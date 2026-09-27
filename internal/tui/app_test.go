@@ -40,7 +40,7 @@ func key(s string) tea.KeyMsg {
 
 // 尺寸消息必须让界面记住 —— 所有 View 都按它算换行。
 func TestApp_记住终端尺寸(t *testing.T) {
-	m := New(fakeView{title: "根"}, 0)
+	m := New(fakeView{title: "根"})
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	got := m2.(Model)
 	if got.width != 100 || got.height != 30 {
@@ -52,7 +52,7 @@ func TestApp_记住终端尺寸(t *testing.T) {
 // 习惯了另一个的用户会以为程序卡死。
 func TestApp_q与CtrlC都退出(t *testing.T) {
 	for _, k := range []tea.KeyMsg{key("q"), key("ctrl+c")} {
-		m := New(fakeView{title: "根"}, 0)
+		m := New(fakeView{title: "根"})
 		_, cmd := m.Update(k)
 		if cmd == nil {
 			t.Errorf("按 %v 没有返回退出命令", k)
@@ -67,7 +67,7 @@ func TestApp_q与CtrlC都退出(t *testing.T) {
 // 栈里只剩根视图时，Esc **不该退出程序** ——
 // 用户在根视图按 Esc 想的是"取消当前操作"，不是"关掉程序"。
 func TestApp_根视图按Esc不退出(t *testing.T) {
-	m := New(fakeView{title: "根"}, 0)
+	m := New(fakeView{title: "根"})
 	m2, cmd := m.Update(key("esc"))
 	if cmd != nil {
 		if _, isQuit := cmd().(tea.QuitMsg); isQuit {
@@ -81,7 +81,7 @@ func TestApp_根视图按Esc不退出(t *testing.T) {
 
 // 视图栈：push 之后 Esc 回到上一层。
 func TestApp_视图栈(t *testing.T) {
-	m := New(fakeView{title: "根"}, 0)
+	m := New(fakeView{title: "根"})
 
 	m2, _ := m.Update(pushMsg{v: fakeView{title: "第二层"}})
 	if n := len(m2.(Model).stack); n != 2 {
@@ -106,7 +106,7 @@ func TestApp_视图栈(t *testing.T) {
 // 内容短的时候整个界面还会随视图切换上下跳。
 // 超宽会让终端折行，界面错位 —— 这是 TUI 最常见的破相方式。
 func TestApp_渲染不超宽且占满高度(t *testing.T) {
-	m := New(fakeView{title: "根"}, 0)
+	m := New(fakeView{title: "根"})
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = m2.(Model)
 
@@ -125,7 +125,7 @@ func TestApp_渲染不超宽且占满高度(t *testing.T) {
 // 内容比屏幕高的视图要被截到屏幕高度，不能把帮助栏顶出屏幕。
 func TestApp_内容过长被截断(t *testing.T) {
 	long := strings.Repeat("一行内容\n", 100)
-	m := New(viewWithBody{body: long}, 0)
+	m := New(viewWithBody{body: long})
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
 	m = m2.(Model)
 
@@ -137,7 +137,7 @@ func TestApp_内容过长被截断(t *testing.T) {
 
 // 还没收到尺寸消息时也要能渲染（初始帧）—— 返回空串会让界面闪一下。
 func TestApp_没有尺寸时也能渲染(t *testing.T) {
-	m := New(fakeView{title: "根"}, 0)
+	m := New(fakeView{title: "根"})
 	if out := m.View(); out == "" {
 		t.Error("没有尺寸消息时 View() 返回空串 —— 首帧会闪")
 	}
@@ -159,7 +159,7 @@ func (v viewWithBody) Title() string                  { return "长内容" }
 // 超宽不截的后果是终端自动折行，整个界面往下错位、帮助栏跑出屏幕。
 func TestApp_内容超宽被截断(t *testing.T) {
 	wide := strings.Repeat("很宽的一行", 40) // 5×3×40 = 600 显示列
-	m := New(viewWithBody{body: wide}, 0)
+	m := New(viewWithBody{body: wide})
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
 	m = m2.(Model)
 
@@ -172,13 +172,13 @@ func TestApp_内容超宽被截断(t *testing.T) {
 
 // 标题与帮助栏超宽同样要截 —— 它们是另外两处调用点。
 func TestApp_标题与帮助栏超宽被截断(t *testing.T) {
-	m := New(viewWithBody{body: "x"}, 0)
+	m := New(viewWithBody{body: "x"})
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 6})
 	m = m2.(Model)
 
 	// 栈顶没有 Title() 时用默认标题；这里用有超长标题的视图
 	long := longTitleView{}
-	m3, _ := New(long, 0).Update(tea.WindowSizeMsg{Width: 20, Height: 6})
+	m3, _ := New(long).Update(tea.WindowSizeMsg{Width: 20, Height: 6})
 	for i, l := range strings.Split(m3.(Model).View(), "\n") {
 		if w := lipgloss.Width(l); w > 20 {
 			t.Errorf("第 %d 行宽 %d 超过 20: %q", i, w, l)
@@ -204,7 +204,7 @@ func (longTitleView) Title() string { return strings.Repeat("超长标题", 20) 
 // 屏幕停在"正在扫描模型目录…"，是 pty 里跑真终端才看出来的。
 func TestApp_Init会被调用(t *testing.T) {
 	ran := false
-	m := New(initTrackingView{onInit: func() { ran = true }}, 0)
+	m := New(initTrackingView{onInit: func() { ran = true }})
 
 	cmd := m.Init()
 	if cmd == nil {
@@ -219,7 +219,7 @@ func TestApp_Init会被调用(t *testing.T) {
 // push 进来的视图也要跑它的 Init —— 不跑的话"进模型视图"会停在"正在解析…"
 func TestApp_push的视图也会跑Init(t *testing.T) {
 	ran := false
-	m := New(fakeView{title: "根"}, 0)
+	m := New(fakeView{title: "根"})
 	_, cmd := m.Update(pushMsg{v: initTrackingView{onInit: func() { ran = true }}})
 	if cmd == nil {
 		t.Fatal("pushMsg 没有返回新视图的 Init 命令")

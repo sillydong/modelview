@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -36,6 +37,19 @@ func loadModelView(m *model.Model) ModelView {
 	return v.(ModelView)
 }
 
+// gotoSection 按 ↓ 走到目标栏目。
+//
+// **不直接写 section(v.cursor)**：那个字段已经删了（它是 cursor 的派生值），
+// 而且直接写字段会绕过生产路径 —— 测试里"按 ↓ 导航"这条路径
+// 就只在 TestModelView_导航 里被走过一次。
+func gotoSection(v ModelView, want section) ModelView {
+	for int(v.cursor) < int(want) {
+		v2, _ := v.Update(key("down"))
+		v = v2.(ModelView)
+	}
+	return v
+}
+
 // 概览要显示格式、大小、张量数、参数量 —— 用户最先要看的四项。
 func TestModelView_概览(t *testing.T) {
 	v := loadModelView(fakeModel())
@@ -50,7 +64,7 @@ func TestModelView_概览(t *testing.T) {
 // **file_type 旁边要把码翻译出来**，而且要能看出可跳转 —— spec §8.2 的核心。
 func TestModelView_元数据里file_type有关联(t *testing.T) {
 	v := loadModelView(fakeModel())
-	v.section = sectionMetadata
+	v = gotoSection(v, sectionMetadata)
 	out := v.View(140, 40)
 
 	if !strings.Contains(out, "general.file_type") {
@@ -69,7 +83,7 @@ func TestModelView_废弃的file_type被标出(t *testing.T) {
 	m := fakeModel()
 	m.Metadata[1] = model.MetaKV{Key: "general.file_type", Value: "4", Raw: uint32(4)}
 	v := loadModelView(m)
-	v.section = sectionMetadata
+	v = gotoSection(v, sectionMetadata)
 	out := v.View(140, 40)
 	if !strings.Contains(out, "已废弃") {
 		t.Errorf("file_type=4 是废弃编号，界面没标出来:\n%s", out)
@@ -83,7 +97,7 @@ func TestModelView_未收录的键也显示(t *testing.T) {
 	m.Metadata = append(m.Metadata, model.MetaKV{
 		Key: "some.vendor.custom_key", Value: "42", Raw: uint32(42)})
 	v := loadModelView(m)
-	v.section = sectionMetadata
+	v = gotoSection(v, sectionMetadata)
 	out := v.View(140, 40)
 	if !strings.Contains(out, "some.vendor.custom_key") {
 		t.Errorf("未收录的键没显示:\n%s", out)
@@ -93,11 +107,11 @@ func TestModelView_未收录的键也显示(t *testing.T) {
 // 左栏导航：↓ 换栏目，右栏内容跟着变；到末尾不越界。
 func TestModelView_导航(t *testing.T) {
 	v := loadModelView(fakeModel())
-	first := v.section
+	first := section(v.cursor)
 
 	v2, _ := v.Update(key("down"))
 	v = v2.(ModelView)
-	if v.section == first {
+	if section(v.cursor) == first {
 		t.Error("按 ↓ 之后栏目没变")
 	}
 
@@ -105,11 +119,11 @@ func TestModelView_导航(t *testing.T) {
 		v2, _ = v.Update(key("down"))
 		v = v2.(ModelView)
 	}
-	if int(v.section) >= len(sections) {
-		t.Errorf("导航越界: section=%d, 共 %d 项", v.section, len(sections))
+	if int(section(v.cursor)) >= len(sections) {
+		t.Errorf("导航越界: section=%d, 共 %d 项", section(v.cursor), len(sections))
 	}
-	if int(v.section) != len(sections)-1 {
-		t.Errorf("一直按 ↓ 应当停在最后一项，实际 %d", v.section)
+	if int(section(v.cursor)) != len(sections)-1 {
+		t.Errorf("一直按 ↓ 应当停在最后一项，实际 %d", section(v.cursor))
 	}
 }
 
@@ -218,5 +232,160 @@ func TestModelView_没有名字时退回文件名(t *testing.T) {
 	v := loadModelView(m)
 	if !strings.Contains(v.Title(), "qwen2.5-3b.gguf") {
 		t.Errorf("没有名字时该退回文件名: %q", v.Title())
+	}
+}
+
+// 元数据的**通用可跳转标记**（不是 file_type 那条）必须自己被测到。
+//
+// 原先唯一的断言是 Contains(out, "◂")，而那个 ◂ 由 file_type 那条分支
+// 自己就产出了 —— **断言的字符串来自另一个被测对象**。
+// 变异验证确认过：只删通用标记那条分支，测试全绿。
+func TestModelView_通用关联标记(t *testing.T) {
+	v := loadModelView(fakeModel())
+	v = gotoSection(v, sectionMetadata)
+	out := v.View(140, 40)
+
+	// qwen2.block_count 在速查表里是按后缀命中的条目，它该有 ◂
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "qwen2.block_count") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("元数据里没有 block_count 这一行:\n%s", out)
+	}
+	if !strings.Contains(line, "◂") {
+		t.Errorf("未收录键的通用关联标记没渲染出来: %q", line)
+	}
+
+	// 反面对照：**查不到的键不该有 ◂** —— 否则记号就成了装饰
+	m := fakeModel()
+	m.Metadata = append(m.Metadata, model.MetaKV{
+		Key: "vendor.no_such_key_anywhere", Value: "1", Raw: uint32(1)})
+	v2 := gotoSection(loadModelView(m), sectionMetadata)
+	for _, l := range strings.Split(v2.View(140, 40), "\n") {
+		if strings.Contains(l, "vendor.no_such_key_anywhere") && strings.Contains(l, "◂") {
+			t.Errorf("查不到的键也挂了可跳转记号: %q", l)
+		}
+	}
+}
+
+// **一个键最多一个记号**：两个一模一样的 ◂ 指向两个不同的条目，
+// ④b-2 接 Enter 跳转时"跳哪一个"没有答案。
+func TestModelView_一个键只有一个记号(t *testing.T) {
+	v := gotoSection(loadModelView(fakeModel()), sectionMetadata)
+	for _, l := range strings.Split(v.View(140, 40), "\n") {
+		if strings.Contains(l, "general.file_type") {
+			if n := strings.Count(l, "◂"); n > 1 {
+				t.Errorf("file_type 那一行有 %d 个跳转记号: %q", n, l)
+			}
+		}
+	}
+}
+
+// **上游猜出来的档位要标出来。**
+//
+// general.file_type = 1024|15 表示"这个值是上游猜的，不是文件里写死的" ——
+// 它可能与该文件实际的张量类型不符，而用户会拿它当事实。
+// 实测本机 5 个模型都没有这个标志位，但 ref 包专门为此留了
+// FileTypeGuessed，TUI 一开始漏掉了它。
+func TestModelView_上游猜的档位要标出(t *testing.T) {
+	m := fakeModel()
+	m.Metadata[1] = model.MetaKV{
+		Key: "general.file_type", Value: "1039", Raw: uint32(1024 | 15)}
+	v := gotoSection(loadModelView(m), sectionMetadata)
+	out := v.View(160, 40)
+
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "general.file_type") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "猜") {
+		t.Errorf("上游猜出来的档位没有标出来 —— 用户会当成文件里写的事实: %q", line)
+	}
+	// 反面对照：文件里写死的档位不该出现这句话
+	v2 := gotoSection(loadModelView(fakeModel()), sectionMetadata)
+	for _, l := range strings.Split(v2.View(160, 40), "\n") {
+		if strings.Contains(l, "general.file_type") && strings.Contains(l, "猜") {
+			t.Errorf("正常档位被标成了「猜的」: %q", l)
+		}
+	}
+}
+
+// **左栏要补成列，右栏各行从同一列开始。**
+//
+// 原先 nav 不补齐，各栏目名字长短不一（"概览" vs "元数据 (52)"），
+// 真终端里右栏每行的起始列都在跳（实测 6/13/11/9/7 列）。
+func TestModelView_右栏对齐(t *testing.T) {
+	v := loadModelView(fakeModel())
+	out := v.View(120, 30)
+
+	// 概览那一栏的右栏从固定列开始；换一栏之后仍是同一列
+	colOf := func(s string, marker string) int {
+		for _, l := range strings.Split(s, "\n") {
+			if i := strings.Index(l, marker); i >= 0 {
+				return displayWidth(l[:i])
+			}
+		}
+		return -1
+	}
+	overviewCol := colOf(out, "文件")
+	if overviewCol < 0 {
+		t.Fatalf("概览栏没有「文件」那一行:\n%s", out)
+	}
+
+	meta := gotoSection(v, sectionMetadata)
+	if got := colOf(meta.View(120, 30), "general.file_type"); got != overviewCol {
+		t.Errorf("换栏之后右栏起始列变了：概览 %d 列、元数据 %d 列", overviewCol, got)
+	}
+}
+
+// 元数据一屏放不下时要**明说漏了多少**，不能静默只显示前 N 条。
+func TestModelView_元数据超屏要说明(t *testing.T) {
+	m := fakeModel()
+	for i := range 60 {
+		m.Metadata = append(m.Metadata, model.MetaKV{
+			Key: fmt.Sprintf("vendor.key_%02d", i), Value: "v", Raw: uint32(i)})
+	}
+	v := gotoSection(loadModelView(m), sectionMetadata)
+	out := v.View(120, 24)
+
+	if !strings.Contains(out, "还有") || !strings.Contains(out, "没显示") {
+		t.Errorf("元数据 %d 条、屏幕 24 行，没说明漏了多少:\n%s", len(m.Metadata), out)
+	}
+	// 反面对照：放得下时不该出现这句话
+	small := gotoSection(loadModelView(fakeModel()), sectionMetadata)
+	if strings.Contains(small.View(120, 40), "没显示") {
+		t.Error("3 条元数据、40 行的屏幕，不该说「还有没显示的」")
+	}
+}
+
+// **左栏用完之后的行，右栏仍要从同一列开始。**
+//
+// 实测：概览有 8 行内容、左栏只有 5 行，超出那几行（"总参数""张量占用"）
+// 从第 0 列开始 —— 因为拼的时候左边什么都没写。
+func TestModelView_左栏用完后右栏仍对齐(t *testing.T) {
+	v := loadModelView(fakeModel())
+	out := v.View(120, 30)
+
+	col := func(marker string) int {
+		for _, l := range strings.Split(out, "\n") {
+			if i := strings.Index(l, marker); i >= 0 {
+				return displayWidth(l[:i])
+			}
+		}
+		return -1
+	}
+	first := col("文件")
+	last := col("张量占用")
+	if first < 0 || last < 0 {
+		t.Fatalf("概览里缺少行（文件=%d 张量占用=%d）:\n%s", first, last, out)
+	}
+	if first != last {
+		t.Errorf("右栏第 1 行从 %d 列开始、最后一行从 %d 列开始 —— 超出左栏的行没对齐",
+			first, last)
 	}
 }

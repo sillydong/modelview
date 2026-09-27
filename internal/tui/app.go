@@ -11,6 +11,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,6 +33,11 @@ type View interface {
 	Update(msg tea.Msg) (View, tea.Cmd)
 	// View 按给定的内容区尺寸渲染。**尺寸由参数传入而不是从 Model 读**：
 	// 这样测试可以拿 80×24 直接调，不必模拟一个终端。
+	//
+	// height 是**内容区**的高度（已去掉标题栏与帮助栏）。各层应当用它
+	// 决定显示多少行；实在用不上的（如概览那种定长内容）可以忽略，
+	// 根视图的 padTo 会兜底 —— 但兜底会打上"…还有 N 行没显示"的记号，
+	// 所以**要展示长列表的视图必须自己接 height**。
 	View(width, height int) string
 	// Help 返回这一层支持的按键提示，给底部帮助栏用。
 	Help() []string
@@ -42,9 +48,6 @@ type View interface {
 // 用消息而不是从 Update 直接返回新 Model：视图拿不到栈，
 // 它只该说"我想深入这一项"，栈怎么变是根 Model 的事。
 type pushMsg struct{ v View }
-
-// popMsg 让视图请求返回上一层。
-type popMsg struct{}
 
 // Model 是根模型。
 type Model struct {
@@ -68,12 +71,14 @@ const (
 
 // New 造一个根 Model，root 是栈底视图。
 //
-// heightAdj 是留给终端自身的高度余量（一般传 0）。
-func New(root View, heightAdj int) Model {
+// **没有 heightAdj 参数**：它曾经存在，但全部 13 个调用点（1 个生产 + 12 个测试）
+// 传的都是 0 —— 留着一个永远不变、又没人知道该传什么的参数，
+// 只会让每个调用点都要想一下"这里该传几"。
+func New(root View) Model {
 	return Model{
 		stack:  []View{root},
 		width:  defaultWidth,
-		height: defaultHeight - heightAdj,
+		height: defaultHeight,
 	}
 }
 
@@ -109,11 +114,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 不跑的话"进模型视图"会永远停在"正在解析…"
 		return m, msg.v.Init()
 
-	case popMsg:
-		if len(m.stack) > 1 {
-			return m.pop()
-		}
-		return m, nil
 	}
 	return m.forward(msg)
 }
@@ -166,6 +166,27 @@ func (m Model) header() string {
 	return styleTitle.Render(title)
 }
 
+// window 算出要显示 [start, end) 这一段，保证 cursor 落在里面。
+//
+// **列表必须跟着光标滚动**：不滚的话，用户按 ↓ 越过一屏之后
+// 看不到自己在选什么，此时按 Enter 打开的是一个看不见的模型。
+//
+// 光标放在窗口偏上的位置而不是正中间：翻页时视觉更稳，
+// 一行一行往下按的时候也不会每按一次整屏都跳。
+func window(total, cursor, capacity int) (start, end int) {
+	if capacity <= 0 || total <= capacity {
+		return 0, total
+	}
+	start = cursor - capacity/3
+	if start < 0 {
+		start = 0
+	}
+	if start+capacity > total {
+		start = total - capacity
+	}
+	return start, start + capacity
+}
+
 // padTo 把 body 补到恰好 h 行，每行不超过 w 显示列（截断交给 truncateLines）。
 //
 // **必须补**：不补的话底部帮助栏会浮在内容下方而不是贴着屏幕底，
@@ -174,7 +195,12 @@ func (m Model) header() string {
 func padTo(body string, h, w int) string {
 	lines := strings.Split(body, "\n")
 	if len(lines) > h {
-		lines = lines[:h]
+		// **截断要说出来**：静默截断会让用户以为这就是全部内容。
+		// 各视图应当自己按 height 裁剪（Library 就是这么做的），
+		// 这里是兜底，兜底也要留个记号。
+		hidden := len(lines) - h + 1
+		lines = append(lines[:h-1], styleHint.Render(
+			fmt.Sprintf("…还有 %d 行没显示", hidden)))
 	}
 	for len(lines) < h {
 		lines = append(lines, "")

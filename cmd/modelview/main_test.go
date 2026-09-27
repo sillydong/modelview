@@ -51,8 +51,6 @@ func TestHumanRatio(t *testing.T) {
 	}
 }
 
-// ---- 以下 5 个测试来自 main，本分支误删过，已恢复 ----
-
 func TestOrDash(t *testing.T) {
 	if got := orDash(""); got != "-" {
 		t.Errorf("orDash(\"\") = %q, want -", got)

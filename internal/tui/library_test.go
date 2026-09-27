@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -279,5 +280,293 @@ func TestLibrary_Enter进入模型视图(t *testing.T) {
 	}
 	if msg.v == nil {
 		t.Error("pushMsg 里的视图是 nil")
+	}
+}
+
+// **重扫之后，上一轮在途的 Fill 结果必须被丢弃。**
+//
+// Fill 要读文件头部，在途几百毫秒；这期间用户按 r 重扫，
+// 旧结果回来时会按 index 覆盖新列表 —— 界面上出现一个这次根本没扫到的
+// 模型，而且不报任何错。实测复现过（见下），两次审查也都独立报了这条。
+func TestLibrary_重扫丢弃在途的Fill结果(t *testing.T) {
+	round := 0
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		round++
+		if round == 1 {
+			return discover.Result{Items: []discover.Item{
+				{Source: discover.SourceOllama, Name: "旧A", Path: "/a", Size: 1},
+				{Source: discover.SourceOllama, Name: "旧B", Path: "/b", Size: 2},
+			}}
+		}
+		return discover.Result{Items: []discover.Item{
+			{Source: discover.SourceOllama, Name: "新C", Path: "/c", Size: 3},
+		}}
+	}
+	lib.fill = func(it *discover.Item) *discover.Item {
+		it.Format = model.FormatGGUF
+		return it
+	}
+
+	// 第一轮：拿到 2 条在途的 Fill 命令，但**先不投递**
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+	_, staleBatch := lib.Update(libraryLoadedMsg{res: discover.Result{
+		Items: []discover.Item{
+			{Source: discover.SourceOllama, Name: "旧A", Path: "/a", Size: 1},
+			{Source: discover.SourceOllama, Name: "旧B", Path: "/b", Size: 2},
+		},
+	}})
+	_ = staleBatch
+
+	// 按 r 重扫，第二轮只返回 1 条
+	_, rescanCmd := lib.Update(key("r"))
+	lib2, _ = lib.Update(rescanCmd())
+	lib = lib2.(Library)
+	if len(lib.items) != 1 || lib.items[0].Name != "新C" {
+		t.Fatalf("重扫后列表 = %v, want [新C]", itemNames(lib.items))
+	}
+
+	// 现在投递**第一轮**的 Fill 结果（用旧世代号）
+	stale := itemFilledMsg{index: 0, gen: lib.gen - 1,
+		item: discover.Item{Name: "旧A", Path: "/a", Size: 1, Format: model.FormatGGUF}}
+	lib2, _ = lib.Update(stale)
+	lib = lib2.(Library)
+
+	if lib.items[0].Name != "新C" {
+		t.Errorf("过期的 Fill 覆盖了新列表: %v —— 界面上会出现一个这次没扫到的模型",
+			itemNames(lib.items))
+	}
+	if lib.filled > len(lib.items) {
+		t.Errorf("filled=%d > len(items)=%d —— 进度会提前消失", lib.filled, len(lib.items))
+	}
+}
+
+// 重扫要把光标与进度一起重置。
+//
+// cursor 归零不只是"回到顶部"：它还兼着防越界 ——
+// 从多条的列表重扫到少条之后，旧光标会让 Enter 索引越界。
+func TestLibrary_重扫后状态被重置(t *testing.T) {
+	round := 0
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		round++
+		n := 5
+		if round > 1 {
+			n = 2
+		}
+		items := make([]discover.Item, n)
+		for i := range items {
+			items[i] = discover.Item{Name: string(rune('a' + i)), Path: "/x", Size: int64(i)}
+		}
+		return discover.Result{Items: items}
+	}
+	lib.fill = func(it *discover.Item) *discover.Item { return it }
+
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+	// 把光标移到底部
+	for range 4 {
+		lib2, _ = lib.Update(key("down"))
+		lib = lib2.(Library)
+	}
+	if lib.cursor != 4 {
+		t.Fatalf("光标在 %d, want 4", lib.cursor)
+	}
+
+	_, cmd := lib.Update(key("r"))
+	lib2, _ = lib.Update(cmd())
+	lib = lib2.(Library)
+
+	if lib.cursor != 0 {
+		t.Errorf("重扫后光标在 %d —— 应当归零（否则 Enter 会索引越界）", lib.cursor)
+	}
+	if lib.filled != 0 {
+		t.Errorf("重扫后 filled=%d —— 应当归零", lib.filled)
+	}
+	// 从 5 条缩到 2 条之后按 Enter 不能崩
+	if _, c := lib.Update(key("enter")); c == nil {
+		t.Error("重扫后在有效条目上按 Enter 应当返回命令")
+	}
+}
+
+// 空库上按 Enter 不能崩 —— 它要索引 items[cursor]，而空列表里没有。
+func TestLibrary_空库按Enter不崩(t *testing.T) {
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{Items: []discover.Item{}}
+	}
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+
+	_, cmd := lib.Update(key("enter"))
+	if cmd != nil {
+		if _, ok := cmd().(pushMsg); ok {
+			t.Error("空列表上按 Enter 不该推入模型视图")
+		}
+	}
+}
+
+// 读失败的条目要显示原因，而且**原因不能被路径挤到屏幕外**。
+//
+// discover.Fill 写的 Err 是 "<完整路径>: <原因>"，
+// 而路径通常比一行还长 —— 实测 80 列下整行只剩 "⚠/tmp/xxx/"，
+// 用户唯一得到的信息是"这个模型坏了"，坏在哪不知道。
+func TestLibrary_读失败显示原因而不是路径(t *testing.T) {
+	long := "/Users/somebody/very/long/path/to/models/" + strings.Repeat("d", 60) + "/broken.gguf"
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{Items: []discover.Item{
+			{Source: discover.SourceGeneric, Name: "broken.gguf", Path: long,
+				Err: long + ": 无法识别的模型格式"},
+		}}
+	}
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+
+	out := lib.View(80, 10)
+	if !strings.Contains(out, "无法识别的模型格式") {
+		t.Errorf("读失败时没把原因显示出来（被路径挤掉了？）:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := displayWidth(line); w > 80 {
+			t.Errorf("行宽 %d 超过 80: %q", w, line)
+		}
+	}
+}
+
+// 各目录的警告（如"manifest 读不了，孤儿检测已跳过"）必须显示完整 ——
+// 那是全工具唯一一条会引导破坏性操作的提示。
+func TestLibrary_目录警告要显示关键半句(t *testing.T) {
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{
+			Items: []discover.Item{{Name: "m", Path: "/m", Size: 1}},
+			Errs: []string{"/blobs 下有 1 个 manifest 读不了，孤儿 blob 检测已跳过：" +
+				"报成「可回收」可能让你删掉真实模型"},
+		}
+	}
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+
+	out := lib.View(120, 20)
+	if !strings.Contains(out, "可能让你删掉真实模型") {
+		t.Errorf("破坏性操作警告的关键半句被截掉了:\n%s", out)
+	}
+}
+
+func itemNames(items []discover.Item) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.Name
+	}
+	return out
+}
+
+// **选中项必须始终可见。**
+//
+// 不滚的话，用户按 ↓ 越过一屏之后看不到自己在选什么，
+// 此时按 Enter 打开的是一个看不见的模型。
+func TestLibrary_选中项始终可见(t *testing.T) {
+	lib := NewLibrary()
+	items := make([]discover.Item, 50)
+	for i := range items {
+		items[i] = discover.Item{
+			Source: discover.SourceGeneric,
+			Name:   fmt.Sprintf("model-%02d.gguf", i),
+			Path:   fmt.Sprintf("/x/%02d", i), Size: int64(i),
+		}
+	}
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{Items: items}
+	}
+	lib.fill = func(it *discover.Item) *discover.Item { return it }
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+
+	// 一路按到第 40 个，每一步都要求选中的那一行在屏幕上
+	for range 40 {
+		lib2, _ = lib.Update(key("down"))
+		lib = lib2.(Library)
+		out := lib.View(80, 24)
+		want := fmt.Sprintf("model-%02d.gguf", lib.cursor)
+		if !strings.Contains(out, want) {
+			t.Fatalf("光标在第 %d 项，但屏幕上没有 %s（没跟着滚）:\n%s",
+				lib.cursor, want, out)
+		}
+	}
+}
+
+// **"未完成的下载不是可回收空间"这条提示，模型再多也不能消失。**
+//
+// 它是全工具唯一一条会引导破坏性操作的提示 —— 照着删会毁掉用户
+// 正在下的模型。原先把提示放在列表之后，实测 30 个模型、80×24 的
+// 终端里它完全不可见。
+func TestLibrary_模型多时安全提示仍可见(t *testing.T) {
+	lib := NewLibrary()
+	items := make([]discover.Item, 40)
+	for i := range items {
+		items[i] = discover.Item{Name: fmt.Sprintf("m%02d", i), Path: "/x", Size: 1}
+	}
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{
+			Items:      items,
+			InProgress: []discover.Item{{Name: "sha256-x-partial", Path: "/p", Size: 1 << 30}},
+			Errs: []string{"/blobs 下有 1 个 manifest 读不了，孤儿 blob 检测已跳过：" +
+				"报成「可回收」可能让你删掉真实模型"},
+		}
+	}
+	lib.fill = func(it *discover.Item) *discover.Item { return it }
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+
+	out := lib.View(80, 24)
+	if !strings.Contains(out, "未完成的下载") {
+		t.Errorf("40 个模型时，未完成下载的提示不见了:\n%s", out)
+	}
+	// **断言前要去掉换行与空格**：警告是折行的，跨行的子串当然找不到 ——
+	// 第一版断言就是栽在这里，看起来像"被截断"，其实是匹配方式不对
+	flat := strings.Join(strings.Fields(out), "")
+	if !strings.Contains(flat, "可能让你删掉真实模型") {
+		t.Errorf("破坏性警告的关键半句被截掉了:\n%s", out)
+	}
+}
+
+// **目录警告要折行，不能被终端的宽度截掉。**
+//
+// 这条必须**从根 Model 渲染**：Library.View 自己不截断，
+// 是根视图的 padTo 按终端宽度截的 —— 直接调 lib.View(80,24)
+// 的话，折行与不折行没有任何区别（变异验证确认过：把 wrapText
+// 去掉，那条测试照样绿）。
+func TestLibrary_目录警告经根视图不被截断(t *testing.T) {
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{
+			Items: []discover.Item{{Name: "m", Path: "/m", Size: 1}},
+			Errs: []string{"/blobs 下有 1 个 manifest 读不了，孤儿 blob 检测已跳过：" +
+				"无法确认这些 blob 是否被引用，报成「可回收」可能让你删掉真实模型"},
+		}
+	}
+	lib.fill = func(it *discover.Item) *discover.Item { return it }
+
+	m := New(lib)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = m2.(Model)
+	// **必须真的跑一次 Init**：不跑的话界面停在"正在扫描模型目录…"，
+	// 这条测试就什么都没验到（第一版就是这样，红得莫名其妙）
+	m3, _ := m.Update(m.Init()())
+	m = m3.(Model)
+
+	out := m.View()
+	// ① 每行不超宽
+	for i, l := range strings.Split(out, "\n") {
+		if w := displayWidth(l); w > 80 {
+			t.Errorf("第 %d 行宽 %d 超过 80: %q", i, w, l)
+		}
+	}
+	// ② 关键半句仍在（折行会把词断开，所以先拼回去再匹配）
+	flat := strings.Join(strings.Fields(out), "")
+	if !strings.Contains(flat, "可能让你删掉真实模型") {
+		t.Errorf("破坏性警告的关键半句被终端宽度截掉了:\n%s", out)
 	}
 }

@@ -13,11 +13,17 @@ import (
 
 // runScan 扫描本机模型目录并输出。
 //
-// **非 JSON 的那条分支目前没有调用方**（无参数时进 TUI 了）。
-// 保留是因为：它的渲染函数（scanLine / orphanLine）有测试守着，
-// 而**命令行看到的、与界面里显示的必须是同一批信息** ——
-// 删掉它等于删掉那批测试，而两边显示不一致正是最难发现的那类 bug。
-// 等 TUI 稳定后再决定：是删掉它，还是给它一个 --no-tui 开关。
+// **非 JSON 的那条分支生产路径上已经没有调用方**（无参数时进 TUI 了），
+// 但它不是死代码：`TestRunScan_没有模型时也要提未完成的下载` 直接调它，
+// 而那条测试守着的是"首次 pull 到一半时，未完成的下载必须被说出来" ——
+// 全工具唯一一条会引导破坏性操作的提示。
+//
+// 第二版注释里还写过"命令行看到的与界面里显示的必须是同一批信息"，
+// **那句话是错的**：scanLine 的最后一列是完整路径，TUI 的行里没有路径列。
+// 两者共享的是"取原因"（discover.ErrReason）与数字格式化（internal/humanize），
+// 不是同一段渲染代码。别拿一句不成立的话当保留理由。
+//
+// 等 TUI 稳定后再定：删掉非 JSON 分支（连测试一起），还是给它一个 --no-tui。
 //
 // **异步分层**：Scan 只 stat，瞬时返回，先把首屏打出来；
 // 再逐个 Fill 补格式与参数量，每读完一个就地刷新那一行。
@@ -120,7 +126,8 @@ func scanLine(it discover.Item) string {
 		humanize.Truncate(it.Name, 28), it.Source, humanize.Bytes(it.Size), it.Path)
 
 	if it.Err != "" {
-		return out + "  ⚠" + it.Err
+		// 与 TUI 共用同一个"取原因"的函数：路径在最后一列已经有了
+		return out + "  ⚠" + discover.ErrReason(it)
 	}
 	if it.Format != "" {
 		out += "  " + string(it.Format)

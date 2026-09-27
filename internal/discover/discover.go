@@ -333,6 +333,17 @@ func Fill(it *Item) *Item {
 	return it
 }
 
+// ErrReason 从 Item.Err 里取"原因"部分，去掉开头的路径前缀。
+//
+// **只给渲染用，不改 Err 本身**：JSON 的 Err 保持原样（那里没有别的地方
+// 显示路径，去掉就是信息丢失），但终端上路径通常比一行还长 ——
+// 实测 80 列下整行只剩 "⚠/tmp/xxx/"，用户唯一得到的信息是"这个模型坏了"，
+// 坏在哪不知道。而路径在 Item.Path 里本来就有，不必再占一次屏幕。
+func ErrReason(it Item) string {
+	prefix := it.Path + ": "
+	return strings.TrimPrefix(it.Err, prefix)
+}
+
 // FillAll 逐个 Fill 并返回填好的切片。同步路径用它；
 // 界面应当自己起 goroutine 逐个调用 Fill 并刷新 —— 那是分层加载的意义。
 func FillAll(ctx context.Context, items []Item) []Item {
