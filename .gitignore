@@ -3,3 +3,6 @@
 .modelview-cache/
 __pycache__/
 *.pyc
+
+# brooks-lint 审查工具的评分记录，不是项目内容
+.brooks-lint-history.json

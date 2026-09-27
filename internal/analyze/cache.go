@@ -19,7 +19,10 @@ import (
 //
 // 具体清单：Stats 结构、decode 的块布局或解码算法、采样策略。
 // 2：删了 Stats.HistMin/HistMax、修了 BOOL 解码、采样上限进了缓存身份。
-const schemaVersion = 2
+// 3：缓存内容从「只有 Stats」改成「Stats + Quant + QuantSims」——
+//
+//	同一份旧缓存用新代码读会命中，但量化分析整块缺失且不报错。
+const schemaVersion = 3
 
 // cacheDirName 是放在模型文件旁边的缓存目录名。
 //
@@ -58,7 +61,20 @@ type cacheRecord struct {
 	// 而 CLI 帮助文字承诺的语义被缓存悄悄推翻了。
 	SampleLimit int `json:"sample_limit"`
 
-	Tensors map[string]*model.Stats `json:"tensors"`
+	Tensors map[string]*cachedTensor `json:"tensors"`
+}
+
+// cachedTensor 是一个张量的全部派生结果。
+//
+// **三件必须一起存取**：Stats 与 Quant/QuantSims 都是同一个张量的分析产物，
+// 而"缓存命中"与"这个张量不用再算了"必须是同一件事。
+// 只缓存 Stats 会让跳过判断（`Stats != nil`）与真实意图
+// （本次输出所需的东西都在）不再等价 —— 实测表现是同一个文件
+// 第一次跑有 181 个模拟 / 253 个诊断，第二次整列变成 0 / 0，且不报错。
+type cachedTensor struct {
+	Stats     *model.Stats     `json:"stats,omitempty"`
+	Quant     *model.QuantInfo `json:"quant,omitempty"`
+	QuantSims []model.QuantSim `json:"quant_sims,omitempty"`
 }
 
 // primaryPath 是首选的缓存路径：模型文件旁边的 .modelview-cache/<名字>.json。
@@ -162,9 +178,13 @@ func (c *cache) load(m *model.Model, sampleLimit int) error {
 		return nil
 	}
 	for _, tn := range m.Tensors {
-		if s, ok := rec.Tensors[tn.Name]; ok {
-			tn.Stats = s
+		ct, ok := rec.Tensors[tn.Name]
+		if !ok {
+			continue
 		}
+		tn.Stats = ct.Stats
+		tn.Quant = ct.Quant
+		tn.QuantSims = ct.QuantSims
 	}
 	return nil
 }
@@ -185,11 +205,16 @@ func (c *cache) save(m *model.Model, sampleLimit int) error {
 		FileSize:      st.Size(),
 		FileMTime:     st.ModTime().UnixNano(),
 		SampleLimit:   sampleLimit,
-		Tensors:       make(map[string]*model.Stats, len(m.Tensors)),
+		Tensors:       make(map[string]*cachedTensor, len(m.Tensors)),
 	}
 	for _, tn := range m.Tensors {
-		if tn.Stats != nil {
-			rec.Tensors[tn.Name] = tn.Stats
+		if tn.Stats == nil && tn.Quant == nil && len(tn.QuantSims) == 0 {
+			continue
+		}
+		rec.Tensors[tn.Name] = &cachedTensor{
+			Stats:     tn.Stats,
+			Quant:     tn.Quant,
+			QuantSims: tn.QuantSims,
 		}
 	}
 	if len(rec.Tensors) == 0 {

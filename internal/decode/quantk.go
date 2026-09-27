@@ -173,6 +173,40 @@ func dqQ2K(src []byte, dst []float32) error {
 	return nil
 }
 
+// unpackQ3KScales 从 Q3_K 的 12 字节 scales 字段解出 16 个 6 位 scale。
+//
+// 打包方式**反直觉**：低 4 位在 raw[0..7]（每字节两个），高 2 位在 raw[8..11]
+// （每字节四个），且高 2 位与低 4 位的对应关系是按 32 位字重新分组的，
+// 不是简单的高低半字节拼接。写计划时凭"低半字节 + 高 2 位"的直觉另写了一份，
+// 与这里的实现比对后发现 16 个子块里有 8 个不一致 —— 所以只能有一份实现。
+//
+// 解出的值域是 [-32, 31]（减了 32 的偏移）。
+func unpackQ3KScales(raw []byte) [16]int8 {
+	// 按原生 32 位字做原地重排，与参考实现同构。
+	//
+	// 注意 aux[2]/aux[3]/aux[0]/aux[1] 的赋值都用了原始的 aux[0]/aux[1] 高位，
+	// 而 aux[0]/aux[1] 最后才被覆盖 —— 四条赋值的顺序不能调换。
+	var aux [4]uint32
+	for i := range 3 {
+		aux[i] = binary.LittleEndian.Uint32(raw[i*4:])
+	}
+	const mask1 uint32 = 0x03030303
+	const mask2 uint32 = 0x0f0f0f0f
+	tmp := aux[2]
+	aux[2] = ((aux[0] >> 4) & mask2) | (((tmp >> 4) & mask1) << 4)
+	aux[3] = ((aux[1] >> 4) & mask2) | (((tmp >> 6) & mask1) << 4)
+	aux[0] = (aux[0] & mask2) | (((tmp >> 0) & mask1) << 4)
+	aux[1] = (aux[1] & mask2) | (((tmp >> 2) & mask1) << 4)
+
+	var sc [16]int8
+	for i := range 4 {
+		for k := range 4 {
+			sc[i*4+k] = int8(byte(aux[i]>>(8*k))) - 32
+		}
+	}
+	return sc
+}
+
 // qhOffset 返回 Q3_K 的高位修正：位**置位**时偏移为 0，清零时为 4。
 func qhOffset(hmByte, m uint8) int8 {
 	if hmByte&m != 0 {
@@ -192,32 +226,11 @@ func dqQ3K(src []byte, dst []float32) error {
 	const perBlock, elems = 110, 256
 	for b := 0; b*elems < len(dst); b++ {
 		blk := src[b*perBlock:]
-		hmask, qs, raw := blk[0:32], blk[32:96], blk[96:108]
+		hmask, qs := blk[0:32], blk[32:96]
 		dAll := f16ToF32(binary.LittleEndian.Uint16(blk[108:]))
 		out := dst[b*elems : (b+1)*elems]
 
-		// 6 位 scale 解包。按原生 32 位字做原地重排，与参考实现同构。
-		//
-		// 注意三个赋值用了原始的 aux[0]/aux[1] 的高 4 位，
-		// 而 aux[0]/aux[1] 最后才被覆盖 —— 顺序不能调换。
-		var aux [4]uint32
-		for i := range 3 {
-			aux[i] = binary.LittleEndian.Uint32(raw[i*4:])
-		}
-		const mask1 uint32 = 0x03030303
-		const mask2 uint32 = 0x0f0f0f0f
-		tmp := aux[2]
-		aux[2] = ((aux[0] >> 4) & mask2) | (((tmp >> 4) & mask1) << 4)
-		aux[3] = ((aux[1] >> 4) & mask2) | (((tmp >> 6) & mask1) << 4)
-		aux[0] = (aux[0] & mask2) | (((tmp >> 0) & mask1) << 4)
-		aux[1] = (aux[1] & mask2) | (((tmp >> 2) & mask1) << 4)
-
-		var sc [16]int8
-		for i := range 4 {
-			for k := range 4 {
-				sc[i*4+k] = int8(byte(aux[i]>>(8*k))) - 32
-			}
-		}
+		sc := unpackQ3KScales(blk[96:108])
 
 		pos, is := 0, 0
 		m := uint8(1)

@@ -27,15 +27,50 @@ type MetaKV struct {
 	Ref   string `json:"ref,omitempty"` // 关联的速查表条目 ID，空表示无
 }
 
-// QuantInfo 描述一个已量化张量的块结构。
+// QuantInfo 是一个已量化张量的块级诊断，由 analyze 包懒加载填充。
 //
-// **目前没有任何代码填它**，解析阶段恒为 nil —— 预留给计划③b 的
-// 块级诊断（块间 scale 分布、动态范围最差的块）。
+// 只读块头就能算出来（scale 与 min 都在块头里），所以它覆盖**全部**子块，
+// 不受统计采样影响 ——「哪个子块被压得最狠」必须看全量，
+// 采样会把这个结论变得不可信。
 type QuantInfo struct {
-	BlockSize int     `json:"block_size"`
-	NumBlocks int64   `json:"num_blocks"`
-	ScaleMin  float64 `json:"scale_min"`
-	ScaleMax  float64 `json:"scale_max"`
+	Scheme        string  `json:"scheme"`          // Q4_K / Q6_K / …
+	BitsPerWeight float64 `json:"bits_per_weight"` // 该格式真实的每权重位宽
+	Blocks        int64   `json:"blocks"`          // 块数
+	SubBlocks     int64   `json:"sub_blocks"`      // 子块总数
+	BlockElems    int     `json:"block_elems"`     // 一个（子）块覆盖的权重数
+
+	// scale 的分布取的是**绝对值**。
+	//
+	// 决定「能表示多细」的是 |scale|（它就是该子块的量化步长），
+	// 符号只是解码时的约定。实测真实文件里 Q6_K 的 int8 子 scale 确实有负值 ——
+	// 按带符号的值统计，「最小 scale」会变成绝对值最大的那个，结论完全反了。
+	ScaleMin    float64 `json:"scale_min"`
+	ScaleMax    float64 `json:"scale_max"`
+	ScaleMean   float64 `json:"scale_mean"`
+	ScaleMedian float64 `json:"scale_median"`
+	// ScaleMedianSampled 表示中位数来自等距抽样而非全量。
+	//
+	// 中位数是唯一必须看到全部值才能精确算出的量（其余统计量都是流式精确的），
+	// 而子块数可以到千万级 —— 超预算后改为等距抽样并置这个标记。
+	// min/max/均值/零计数/最扁**任何时候都是全量精确的**。
+	ScaleMedianSampled bool `json:"scale_median_sampled,omitempty"`
+
+	// ZeroScaleBlocks 是 scale 恒为 0 的子块数 —— 这些子块的权重
+	// 全落在一个量化级上，信息被压没了。是「压得最狠」的直接证据。
+	ZeroScaleBlocks int64 `json:"zero_scale_blocks"`
+
+	// FlattestRatio / FlattestScale / FlattestIndex 描述「被压得最狠的子块」。
+	//
+	// 判据是 **|scale| / 同一个块内最大的 |scale|**，不是绝对 scale：
+	// scale = d × 子scale，而 d 是整个块共用的。跨块直接比绝对 scale，
+	// 会把「这个块的数值本来就小」误判成「被压平」。
+	// 归一后的比值才表示编码器把这个子块挤到了多窄（0 = 完全压平）。
+	//
+	// FlattestIndex 是**子块序号**，不是字节偏移 ——
+	// 界面上应显示成「第 N 个子块（张量内第 N×BlockElems 个权重）」。
+	FlattestRatio float64 `json:"flattest_ratio"`
+	FlattestScale float64 `json:"flattest_scale"`
+	FlattestIndex int64   `json:"flattest_index"`
 }
 
 // Tensor 是一个张量。
@@ -82,6 +117,36 @@ type Tensor struct {
 	Stats *Stats `json:"stats,omitempty"`
 
 	Quant *QuantInfo `json:"quant,omitempty"`
+
+	// QuantSims 是对浮点张量做的量化模拟，三档并排（Q8_0/Q6_K/Q4_K）。
+	//
+	// 已量化的张量不填这个字段 —— 它们没有「压到某档」的问题，看 Quant。
+	// 两者互斥：浮点走模拟、量化走诊断。
+	QuantSims []QuantSim `json:"quant_sims,omitempty"`
+}
+
+// QuantSim 是把一个浮点张量模拟量化到某一档的结果。
+//
+// **按该格式真实的编码算法模拟**（编码 → 解码 → 与原值比对），
+// 不是「块内最大绝对值 / 级数」那种统一公式 —— 那套东西的结果取决于
+// 「级数怎么定、块多大」这两个任意选择，实测同一批真实 F16 权重上
+// 光是级数从 31 改成 63 就摆动 6.26 dB，比它自身的误差还大。
+type QuantSim struct {
+	Target string `json:"target"` // Q8_0 / Q6_K / Q4_K
+
+	MaxAbsErr  float64 `json:"max_abs_err"`
+	MaxRelErr  float64 `json:"max_rel_err"`
+	MeanAbsErr float64 `json:"mean_abs_err"`
+	SNRDB      float64 `json:"snr_db"`
+
+	// BitsPerWeight 是该目标格式**真实**的每权重位宽
+	//（Q8_0 是 8.5、Q6_K 是 6.5625、Q4_K 是 4.5，含块头开销）。
+	BitsPerWeight float64 `json:"bits_per_weight"`
+	// Compression 是相对源类型的压缩比（源位宽 / 目标位宽）。
+	Compression float64 `json:"compression"`
+
+	// Sampled 表示这些数字来自采样而非全量。
+	Sampled bool `json:"sampled"`
 }
 
 // Stats 是一个张量数值的统计结果。
