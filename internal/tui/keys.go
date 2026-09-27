@@ -6,13 +6,15 @@ import "strings"
 // 帮助栏写死字符串的话，改了键位就会显示错的提示，
 // 而用户照着按没反应。
 const (
-	keyUp     = "↑/k"
-	keyDown   = "↓/j"
-	keyEsc    = "Esc"
-	keyEnter  = "Enter"
-	keyRescan = "r"
-	keyQuit   = "q"
-	keyHelp   = "?"
+	keyUp        = "↑/k"
+	keyDown      = "↓/j"
+	keyEsc       = "Esc"
+	keyEnter     = "Enter"
+	keyFilter    = "/"
+	keyBackspace = "Backspace"
+	keyRescan    = "r"
+	keyQuit      = "q"
+	keyHelp      = "?"
 )
 
 // helpLine 是底部的按键提示。

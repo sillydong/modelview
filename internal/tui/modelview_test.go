@@ -438,3 +438,31 @@ func TestModelView_渲染恰好占满高度(t *testing.T) {
 		}
 	}
 }
+
+// **解析还没回来时 Enter 什么也不做** —— 不能推入子视图。
+//
+// 推入的子视图拿到的是 nil 的 *model.Model，而它们全都无保护地取
+// m.Tensors / m.Metadata —— 那是一条 panic 路径（实测复现过）。
+// 它只在"进模型后立刻按 Enter"这个几秒的窗口里可达，手测几乎撞不到，
+// 所以只有这条测试看着它。
+func TestModelView_解析未完成时Enter不推子视图(t *testing.T) {
+	v := gotoSection(NewModelViewFromPath("/x/m.gguf", "m"), sectionTensors)
+	if _, cmd := v.Update(key("enter")); cmd != nil {
+		if msg, ok := cmd().(pushMsg); ok {
+			t.Fatalf("解析未完成时 Enter 推入了 %T —— 它拿到的是 nil 的 *model.Model，"+
+				"View 里取 m.Tensors 就是 panic", msg.v)
+		}
+		t.Fatalf("解析未完成时 Enter 返回了命令 %T，want 什么也不做", cmd())
+	}
+
+	// **正对照**：解析完成后同一个键要能推入 —— 少了它，这条测试在
+	// "Enter 整个被删掉"时也是绿的（那同样是 bug，只是另一种）。
+	loaded := gotoSection(loadModelView(fakeModel()), sectionTensors)
+	_, cmd := loaded.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("解析完成后 Enter 没有推入子视图")
+	}
+	if _, ok := cmd().(pushMsg); !ok {
+		t.Fatalf("解析完成后 Enter 返回的不是 pushMsg: %T", cmd())
+	}
+}

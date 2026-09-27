@@ -33,6 +33,12 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDown}
 	case "ctrl+c":
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
+	case "backspace":
+		// **必须显式映射**：不映射的话会落到 default 分支，造出一个
+		// Type=KeyRunes、内容是字面量 "backspace" 的按键 ——
+		// 测试看着在验退格，实际在往过滤词里打那九个字母，
+		// 而且因为没有断言"只删了一个字"以外的差别，它会一直绿。
+		return tea.KeyMsg{Type: tea.KeyBackspace}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}

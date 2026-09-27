@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -108,17 +109,46 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 			if v.cursor < len(sections)-1 {
 				v.cursor++
 			}
+		case "enter":
+			// **模型还没解析完时 Enter 什么也不做**：这时推入的任何子视图
+			// 都会拿到一个 nil 的 *model.Model，而它们全都无保护地取
+			// m.Tensors / m.Metadata —— 结果是 panic（实测复现过）。
+			//
+			// 放在这里统一早退，而不是每个分支各写一句 `v.m != nil`：
+			// 后面每接一个栏目（速查表、元数据）都要记得加一次，
+			// 漏一次就是一条崩溃路径，而它只在"进模型后立刻按 Enter"
+			// 这个几秒的窗口里可达 —— 手测几乎撞不到。
+			//
+			// 界面此时显示的是"正在解析…"，所以用户看得出来为什么没反应。
+			if v.m == nil {
+				return v, nil
+			}
+			switch section(v.cursor) {
+			case sectionTensors:
+				return v, pushCmd(NewTensorsView(v.m))
+			}
 		}
 	}
 	return v, nil
 }
 
+// opensOnEnter 表示当前栏目的内容会在 Enter 时进子视图。
+//
+// 帮助栏只列真的按键 —— `keys.go` 里那条"列了不支持的等于骗用户按"
+// 对这里同样成立。**每接上一个栏目的子视图，就在这里加一格**：
+// 忘了加的表现是"按了有反应但帮助栏不写"（用户发现不了），
+// 加多了的表现是"帮助栏写了一个按了没反应的键"（用户被指到死路）。
+// 后者更糟，所以默认返回 false。
+func (v ModelView) opensOnEnter() bool {
+	return section(v.cursor) == sectionTensors
+}
+
 func (v ModelView) Help() []string {
-	return []string{
-		keyUp + " " + keyDown + " 切换栏目",
-		keyEsc + " 返回",
-		keyQuit + " 退出",
+	bindings := []string{keyUp + " " + keyDown + " 切换栏目"}
+	if v.opensOnEnter() {
+		bindings = append(bindings, keyEnter+" 打开")
 	}
+	return append(bindings, keyEsc+" 返回", keyQuit+" 退出")
 }
 
 func (v ModelView) View(width, height int) string {
@@ -339,17 +369,87 @@ func fileTypeCode(kv model.MetaKV) (uint32, bool) {
 	}
 }
 
-// tensors / quantDist 是 ④b-2 的内容。
+// tensors 是"张量"栏的右栏内容：**只是摘要**，完整列表按 Enter 进子视图。
+//
+// 不把列表直接铺在右栏：那条列表有自己的光标、过滤与滚动，
+// 挤在右栏里既窄又要和左栏的 ↑↓ 抢按键。
+func (v ModelView) tensors() string {
+	var sb strings.Builder
+	sb.WriteString(styleSection.Render(fmt.Sprintf("张量（%d 个）", len(v.m.Tensors))) + "\n\n")
+
+	// **空模型要先挡住**：下面用 sum.largest 的两个字段，
+	// 一个张量都没有时它是 nil —— 直接取就是解引用 panic，
+	// 而"读到一个没有张量的文件"完全可能（parser 不保证非空）
+	if len(v.m.Tensors) == 0 {
+		sb.WriteString(styleHint.Render("这个文件里没有张量") + "\n")
+		return sb.String()
+	}
+
+	sum := summarizeTensors(v.m)
+	fmt.Fprintf(&sb, "总参数   %s\n", humanize.Count(v.m.TotalParams()))
+	fmt.Fprintf(&sb, "类型     %s\n", sum.dtypeLine())
+	fmt.Fprintf(&sb, "最大的   %s（%s）\n",
+		humanize.Truncate(sum.largest.Name, 40), humanize.Bytes(sum.largest.ByteSize))
+	sb.WriteString(styleHint.Render(fmt.Sprintf(
+		"\n按 %s 打开完整列表（可按名字过滤）", keyEnter)) + "\n")
+	return sb.String()
+}
+
+// summarizeTensors 汇总张量列表。
+//
+// **最大的那个要挑出来**：用户点进"张量"栏想知道的第一件事是
+// "这个模型的钱花在哪了"，而答案就是这个。
+// 这里不逐条列前 N 个 —— 那是完整列表的活，抄一份在右栏里，
+// 两处的排序一旦不同就是两个互相矛盾的"前 5 个"。
+func summarizeTensors(m *model.Model) tensorSummary {
+	s := tensorSummary{}
+	for _, tn := range m.Tensors {
+		if tn.ByteSize > s.largestBytes {
+			s.largest, s.largestBytes = tn, tn.ByteSize
+		}
+	}
+	// **必须排序**：DtypeHistogram 返回的是 map，遍历顺序随机 ——
+	// 不排的话同一屏每次刷新（任何一个按键都会触发重绘）
+	// 类型的先后顺序都在变，看起来就是字在抖。
+	// 按个数降序、同数按类型名升序：前者是用户关心的，
+	// 后者只为让结果唯一（否则个数相同的两项顺序仍不确定）。
+	for d, n := range m.DtypeHistogram() {
+		s.dtypes = append(s.dtypes, dtypeCount{d: d, n: n})
+	}
+	sort.Slice(s.dtypes, func(i, j int) bool {
+		if s.dtypes[i].n != s.dtypes[j].n {
+			return s.dtypes[i].n > s.dtypes[j].n
+		}
+		return s.dtypes[i].d < s.dtypes[j].d
+	})
+	return s
+}
+
+type dtypeCount struct {
+	d model.Dtype
+	n int
+}
+
+type tensorSummary struct {
+	dtypes       []dtypeCount
+	largest      *model.Tensor
+	largestBytes int64
+}
+
+// dtypeLine 拼一行类型分布。
+func (s tensorSummary) dtypeLine() string {
+	parts := make([]string, 0, len(s.dtypes))
+	for _, dc := range s.dtypes {
+		parts = append(parts, fmt.Sprintf("%s ×%d", dc.d, dc.n))
+	}
+	return strings.Join(parts, "  ")
+}
+
+// quantDist 是 ④b-2 的内容。
 //
 // **明写"还没做"而不是留空白面板**：空白会让用户以为是加载失败，
 // 而"还没做"至少是诚实的。左栏仍然列出这几项 ——
 // 导航结构现在就定下来，④b-2 只填内容、不用再动骨架。
-func (v ModelView) tensors() string {
-	return styleHint.Render(fmt.Sprintf(
-		"%d 个张量。列表与详情在计划 ④b-2 里实现；"+
-			"现在可以用 modelview --json 看到全部张量", len(v.m.Tensors)))
-}
-
 func (v ModelView) quantDist() string {
 	return styleHint.Render("量化分布在计划 ④b-2 里实现")
 }
