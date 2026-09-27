@@ -30,9 +30,8 @@ type tensorSegment struct {
 // 表里这些条目的说明后面会挂一句"本机语料未出现"，用户看得到。
 var segmentsNotInCorpus = map[string]bool{
 	"altup": true, "attn": true, "attn_linear": true, "attn_norm_2": true,
-	"audio": true, "encoder": true, "ffn": true, "ffn_gate_exps": true,
-	"ffn_up_exps": true, "laurel": true, "output": true, "projector": true,
-	"vision": true,
+	"audio": true, "encoder": true, "ffn": true,
+	"laurel": true, "projector": true, "vision": true,
 }
 
 // tensorSegments 是张量名各段的释义。
@@ -134,6 +133,9 @@ var tensorSegments = []tensorSegment{
 	// ── Gemma 3 / 3n 的结构件 ──
 	{"attn_q_norm", "Q 的归一化", "对 query 做归一化（QK-norm）。Gemma 3 / Qwen3 这类架构用它稳定注意力", "[head_dim]"},
 	{"attn_k_norm", "K 的归一化", "对 key 做归一化", "[head_dim]"},
+	{"attn_sinks", "注意力汇点", "**GPT-OSS 特有**：每个注意力头一个可学习的标量，" +
+		"拼在注意力的 key/value 前面当「汇点」用 —— 让注意力有权把概率放在" +
+		"「什么都不看」上，而不必摊到真实 token 上。形状 [n_head]（本机 gpt-oss:20b 是 [64]）", "[n_head]"},
 	{"attn_out", "注意力输出投影", "与 attn_output 同一个东西。" +
 		"本机实测出现在 gemma4 的视觉/音频塔里（v./a.blk.N.attn_out），文本塔用 attn_output", ""},
 	{"attn_output_norm", "注意力输出的归一化", "注意力结果投影之后的 norm", "[n_embd]"},

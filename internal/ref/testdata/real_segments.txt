@@ -11,6 +11,7 @@ attn_post_norm
 attn_q
 attn_q_norm
 attn_qkv
+attn_sinks
 attn_v
 bias
 blk
@@ -24,6 +25,7 @@ ffn_down
 ffn_down_1
 ffn_down_exps
 ffn_gate
+ffn_gate_exps
 ffn_gate_inp
 ffn_gate_up_exps
 ffn_norm
@@ -32,6 +34,7 @@ ffn_post_norm
 ffn_post_norm_1
 ffn_up
 ffn_up_1
+ffn_up_exps
 inp_gate
 input_max
 input_min
@@ -46,6 +49,7 @@ mm
 norm
 norm_conv
 out
+output
 output_max
 output_min
 output_norm

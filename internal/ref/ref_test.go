@@ -64,7 +64,7 @@ func TestTables_结构自洽(t *testing.T) {
 		t.Fatal("一个条目都没有")
 	}
 	// 反向门禁：条目总数掉了说明表被删了
-	const wantEntries = 243
+	const wantEntries = 249
 	if entries != wantEntries {
 		t.Errorf("条目总数 %d，预期 %d —— 增删条目时同步改这里", entries, wantEntries)
 	}

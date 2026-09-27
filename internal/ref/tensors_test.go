@@ -44,7 +44,7 @@ func TestTensorNaming_覆盖真实张量名(t *testing.T) {
 			len(missing), strings.Join(missing, "、"))
 	}
 	// 反向门禁：清单被截断时上面那条会"零缺失"地通过
-	const wantSegs = 73 // 4 个本机模型实测的并集；清单变了核对后再改
+	const wantSegs = 77 // 5 个本机模型实测的并集；清单变了核对后再改
 	if total != wantSegs {
 		t.Errorf("清单有 %d 段，预期 %d 段 —— 要么清单被截断了，"+
 			"要么上游模型换了（那就重新跑一次脚本并核对这个数）", total, wantSegs)
@@ -150,8 +150,8 @@ func TestTensorNaming_未实测段清单准确(t *testing.T) {
 	// 与 segmentsNotInCorpus 的 laurel，测试照样绿，而注释里写着
 	// "多一个少一个都红"。规模要单独钉住。
 	const (
-		wantSegs      = 86 // tensorSegments 的条目数
-		wantNotInCorp = 13 // 其中语料里没出现过的
+		wantSegs      = 87 // tensorSegments 的条目数
+		wantNotInCorp = 10 // 其中语料里没出现过的（gpt-oss 又验证掉 3 个）
 	)
 	if len(tensorSegments) != wantSegs {
 		t.Errorf("张量段有 %d 条，预期 %d 条 —— 增删条目时同步改这里，"+

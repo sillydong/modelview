@@ -29,7 +29,7 @@ func TestGGUFKeys_覆盖真实模型的键(t *testing.T) {
 			keys = append(keys, line)
 		}
 	}
-	if len(keys) != 93 {
+	if len(keys) != 108 {
 		t.Fatalf("真值只有 %d 个键 —— 夹具被删过或生成得不完整，"+
 			"这条测试会静默变成低标准", len(keys))
 	}
@@ -195,7 +195,7 @@ func TestGGUFKeys_每条都有释义与取值(t *testing.T) {
 	check("keyExact", keyExact)
 	check("keySuffixes", keySuffixes)
 	// 精确值，不是下限：下限的话删掉十条都还是绿的
-	const wantKeys = 71 // keyExact 31 + keySuffixes 40（实测）
+	const wantKeys = 76 // keyExact 31 + keySuffixes 45（实测）
 	if got := len(keyExact) + len(keySuffixes); got != wantKeys {
 		t.Fatalf("键释义有 %d 条，预期 %d 条 —— 增删条目时同步改这里", got, wantKeys)
 	}
@@ -214,7 +214,7 @@ func TestTensorNaming_每段都有释义(t *testing.T) {
 			t.Errorf("张量段 %s 没有释义 —— 用户查到的是个空壳", s.seg)
 		}
 	}
-	if len(tensorSegments) != 86 {
+	if len(tensorSegments) != 87 {
 		t.Fatalf("张量段 %d 条，预期 86 条 —— 增删时同步改这里", len(tensorSegments))
 	}
 }

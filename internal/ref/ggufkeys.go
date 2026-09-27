@@ -90,6 +90,24 @@ var keySuffixes = []keyEntry{
 	{"attention.head_count_swa", "滑动窗口层的头数", "对使用滑动窗口的那几层生效的头数", "正整数"},
 	{"rope.freq_base", "RoPE 的基频", "旋转位置编码的基频。默认 10000，长上下文模型常调到几十万", "浮点"},
 	{"rope.freq_base_swa", "滑动窗口层的 RoPE 基频", "对使用滑动窗口的那几层生效的基频", "浮点"},
+	// ── 长上下文用的 RoPE 缩放（本机 gpt-oss:20b 全是这一组，type=yarn）──
+	//
+	// 取值名照 gguf 包的 RopeScalingType：none / linear / yarn / longrope。
+	// 这五条来自两份真实文件（ollama 的 gptoss 版与 ggml-org 的官方版），
+	// 后者多出 type / yarn_beta_fast / yarn_beta_slow 三条。
+	{"rope.scaling.type", "RoPE 缩放方式", "none=不缩放、linear=线性插值、" +
+		"yarn=YaRN（按频率分段插值，长上下文最常用）、longrope=LongRoPE",
+		"none / linear / yarn / longrope"},
+	{"rope.scaling.factor", "RoPE 缩放倍数", "上下文被拉长的倍数。" +
+		"与 rope.scaling.original_context_length 一起读：训练时 4096、推理拉到 131072 就是 32 倍", "浮点（如 32）"},
+	{"rope.scaling.original_context_length", "缩放前的上下文长度",
+		"模型训练时的原始上下文长度。**它才是「缩放前」的基准**，" +
+			"与当前的 context_length 相除就是 rope.scaling.factor", "正整数"},
+	{"rope.scaling.yarn_beta_fast", "YaRN 快边界",
+		"YaRN 里区分「高频不插值 / 低频插值」的分界，越大插值的高频越多", "浮点"},
+	{"rope.scaling.yarn_beta_slow", "YaRN 慢边界", "同上的另一侧边界；" +
+		"fast/slow 之间做平滑过渡，避免频率处理突变", "浮点"},
+
 	{"rope.dimension_count", "RoPE 的维度数", "参与旋转的维度个数；不填时按每头维度推", "正整数"},
 	{"rope.dimension_count_swa", "滑动窗口层的 RoPE 维度数",
 		"滑动窗口注意力层单独用的 RoPE 维度数；与 rope.dimension_count 的关系同 " +
