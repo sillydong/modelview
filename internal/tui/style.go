@@ -32,4 +32,10 @@ var (
 
 	// 提示（"正在读取格式与参数量…"）
 	styleHint = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true)
+
+	// 元数据的字段名（"general.file_type"）
+	styleField = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+
+	// 可跳转的关联标注（"[general.file_type = 15（MOSTLY_Q4_K_M）] ◂"）
+	styleLink = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )

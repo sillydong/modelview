@@ -96,6 +96,13 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 			l.loaded = false
 			l.filled = 0
 			return l, l.Init()
+		case "enter":
+			if len(l.items) > 0 {
+				it := l.items[l.cursor]
+				return l, func() tea.Msg {
+					return pushMsg{v: NewModelViewFromPath(it.Path, it.Name)}
+				}
+			}
 		}
 	}
 	return l, nil
@@ -118,6 +125,7 @@ func (l Library) fillCmd(i int) tea.Cmd {
 func (l Library) Help() []string {
 	return []string{
 		keyUp + " " + keyDown + " 移动",
+		keyEnter + " 查看",
 		keyRescan + " 重扫",
 		keyQuit + " 退出",
 	}

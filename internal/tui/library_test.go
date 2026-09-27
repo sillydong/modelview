@@ -235,17 +235,15 @@ func TestLibrary_空结果有提示(t *testing.T) {
 func TestLibrary_帮助栏只列支持的键(t *testing.T) {
 	lib, _ := fakeLibrary()
 	help := strings.Join(lib.Help(), " ")
-	for _, want := range []string{keyUp, keyDown, keyRescan, keyQuit} {
+	for _, want := range []string{keyUp, keyDown, keyEnter, keyRescan, keyQuit} {
 		if !strings.Contains(help, want) {
 			t.Errorf("帮助栏少了 %s: %q", want, help)
 		}
 	}
 	// **还没做的键不许列**：列了等于骗用户按。
-	// Enter（进单模型）在 Task 4 接上，?（速查表）在 ④b-2
-	for _, unwanted := range []string{"Enter", "?"} {
-		if strings.Contains(help, unwanted) {
-			t.Errorf("还没实现 %s，帮助栏不该列: %q", unwanted, help)
-		}
+	// Enter（进单模型）已经接上了；?（速查表）在 ④b-2
+	if strings.Contains(help, "?") {
+		t.Errorf("速查表还没做，帮助栏不该列 ?: %q", help)
 	}
 }
 
@@ -262,5 +260,24 @@ func TestLibrary_长名字被截断(t *testing.T) {
 	out := lib2.(Library).View(80, 10)
 	if strings.Contains(out, long) {
 		t.Errorf("超长模型名没被截断，会把整行撑破:\n%s", out)
+	}
+}
+
+// Enter 要能进单模型视图（走 pushMsg，由根 Model 压栈）。
+func TestLibrary_Enter进入模型视图(t *testing.T) {
+	lib, _ := fakeLibrary()
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+
+	_, cmd := lib.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("按 Enter 没有返回命令")
+	}
+	msg, ok := cmd().(pushMsg)
+	if !ok {
+		t.Fatalf("按 Enter 返回的不是 pushMsg: %T", cmd())
+	}
+	if msg.v == nil {
+		t.Error("pushMsg 里的视图是 nil")
 	}
 }

@@ -9,8 +9,10 @@ const (
 	keyUp     = "↑/k"
 	keyDown   = "↓/j"
 	keyEsc    = "Esc"
+	keyEnter  = "Enter"
 	keyRescan = "r"
 	keyQuit   = "q"
+	keyHelp   = "?"
 )
 
 // helpLine 是底部的按键提示。
