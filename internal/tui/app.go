@@ -43,6 +43,47 @@ type View interface {
 	Help() []string
 }
 
+// modalView 是"现在要独占按键"的视图。
+//
+// 不加这个接口的话，界面里就没法有一个能输入文字的框：
+// 全局按键处理排在视图之前，输入 "qwen" 的第一下就退出了程序。
+// 而这个问题**单元测试抓不到** —— 直接调 view.Update 绕过了根 Model
+// （app.go 开头那段注释讲的就是同一种漏法）。
+//
+// 用"整屏独占"而不是"按键级白名单"（如 ClaimsKey(key) bool）：
+// **不是**因为白名单要列举的键多 —— 非 q/esc 的键本来就会经根视图末尾的
+// 兜底 forward 转给视图，白名单只要声明 q 与 esc 两个键。真正的理由是
+// **所有权**：白名单把"q 该不该退出"这个决定从根视图漏给了每一个视图，
+// 漏一个就是用户要么退不出去、要么在输入框里打着字就退出了；
+// 而且根视图每新增一个全局键（?、tab…），每个视图都得跟着改一遍。
+//
+// **注意这个"未导出"只封住了接口名，封不住方法名**：Go 的接口满足是
+// 结构性的，任何包里只要有个类型碰巧有 `Modal() bool` 就自动满足它。
+// 当前所有视图都在本包内、方法名也叫得很具体，风险很低；
+// 真要把方法名也封住，得把它小写成 `modal()`。
+type modalView interface{ Modal() bool }
+
+// topModal 判断栈顶视图是否要独占按键。
+//
+// **只看栈顶**：下层视图即使处在模态状态也不该拦按键 ——
+// 用户看到的是栈顶那一屏，按键就该归它。
+func (m Model) topModal() bool {
+	mv, ok := m.stack[len(m.stack)-1].(modalView)
+	return ok && mv.Modal()
+}
+
+// pushCmd 造一条"进入下一层"的命令，省得每个视图都写一遍闭包。
+//
+// 返回 tea.Cmd 而不是 pushMsg：视图 Update 的签名要的是 Cmd，
+// 直接返回消息的话每个调用点都得包一层 `func() tea.Msg { … }`。
+//
+// 名字跟 fillCmd 一样带 Cmd：它**只造命令、不动栈**（真正改栈的是根 Model
+// 收到 pushMsg 之后），而 `pop` 是直接改栈的 —— 叫成 push 会跟 pop
+// 看着对称、行为却不对称。
+func pushCmd(v View) tea.Cmd {
+	return func() tea.Msg { return pushMsg{v: v} }
+}
+
 // pushMsg 让任意视图请求"进入下一层"。
 //
 // 用消息而不是从 Update 直接返回新 Model：视图拿不到栈，
@@ -95,10 +136,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.forward(msg)
 
 	case tea.KeyMsg:
-		// 全局按键优先于视图自己的处理：q 在任何一层都该能退出，
-		// 否则进了张量详情就没法一键退出，只能一层层 Esc 出来
+		// **Ctrl+C 永远不被拦**：模态视图可能吃掉 q（那正是它的作用），
+		// 忘了处理退出时用户还能有一条确定的出路。
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		// 模态视图独占按键：能输入文字的框必须拿到 q 与 Esc，
+		// 否则过滤 "qwen" 的第一下就退出程序、第一下 Esc 就跳回上一层。
+		if m.topModal() {
+			return m.forward(msg)
+		}
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "q":
 			return m, tea.Quit
 		case "esc":
 			if len(m.stack) > 1 {

@@ -130,9 +130,7 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 		case "enter":
 			if len(l.items) > 0 {
 				it := l.items[l.cursor]
-				return l, func() tea.Msg {
-					return pushMsg{v: NewModelViewFromPath(it.Path, it.Name)}
-				}
+				return l, pushCmd(NewModelViewFromPath(it.Path, it.Name))
 			}
 		}
 	}

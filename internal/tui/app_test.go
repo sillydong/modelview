@@ -242,3 +242,170 @@ func (v initTrackingView) Init() tea.Cmd {
 func (v initTrackingView) Update(tea.Msg) (View, tea.Cmd) { return v, nil }
 func (v initTrackingView) View(w, h int) string           { return "跟踪" }
 func (v initTrackingView) Help() []string                 { return nil }
+
+// modalFakeView 是一个会声明自己"现在要独占按键"的视图。
+//
+// 它记录收到的按键 —— 这是断言的关键：只看根视图返回的命令
+// 分不清"视图拿到了 q"和"谁都没拿到 q"（两种情况下 cmd 都是 nil）。
+type modalFakeView struct {
+	fakeView
+	modal bool
+	seen  []string
+}
+
+func (v modalFakeView) Update(msg tea.Msg) (View, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		v.seen = append(v.seen, k.String())
+	}
+	return v, nil
+}
+
+// Modal 让这个视图可以选择性地声明独占。
+func (v modalFakeView) Modal() bool { return v.modal }
+
+// 模态视图必须拿到 q —— 否则用户在过滤框里敲 "qwen" 的第一下就退出了程序。
+//
+// **这条测试必须经过根 Model**：直接调 view.Update 的话，
+// "根 Model 把按键吞了"这件事根本不在被测范围里，测试会假绿。
+func TestApp_模态视图能拿到q(t *testing.T) {
+	root := New(fakeView{title: "根"})
+	pushed, _ := root.Update(pushMsg{v: modalFakeView{modal: true}})
+	m := pushed.(Model)
+
+	next, cmd := m.Update(key("q"))
+	if cmd != nil {
+		if _, isQuit := cmd().(tea.QuitMsg); isQuit {
+			t.Fatal("模态视图下按 q 退出了程序 —— 用户没法筛 qwen")
+		}
+	}
+	top := next.(Model).stack[len(next.(Model).stack)-1].(modalFakeView)
+	if len(top.seen) != 1 || top.seen[0] != "q" {
+		t.Errorf("视图收到的按键 = %v, want [q]", top.seen)
+	}
+}
+
+// 模态视图下 Esc 也不弹栈 —— 它是"取消输入"，不是"返回上一层"。
+func TestApp_模态视图下Esc不弹栈(t *testing.T) {
+	root := New(fakeView{title: "根"})
+	pushed, _ := root.Update(pushMsg{v: modalFakeView{modal: true}})
+	m := pushed.(Model)
+
+	next, _ := m.Update(key("esc"))
+	m2 := next.(Model)
+	if len(m2.stack) != 2 {
+		t.Fatalf("栈深 = %d, want 2 —— Esc 被根视图抢先弹栈了", len(m2.stack))
+	}
+	if top := m2.stack[1].(modalFakeView); len(top.seen) != 1 || top.seen[0] != "esc" {
+		t.Errorf("视图收到的按键 = %v, want [esc]", top.seen)
+	}
+}
+
+// Ctrl+C 在模态下仍然退出，而且**不转给视图**。
+//
+// 把这条保证放在根视图，而不是"要求每个模态视图自己记得处理退出"：
+// 后者漏一个就是用户被困住，且没有任何东西会红。
+// 按 q 是不能指望的 —— 它可能被当成输入吃掉，那正是模态的意义。
+func TestApp_模态视图下CtrlC仍退出(t *testing.T) {
+	root := New(fakeView{title: "根"})
+	pushed, _ := root.Update(pushMsg{v: modalFakeView{modal: true}})
+	m := pushed.(Model)
+
+	next, cmd := m.Update(key("ctrl+c"))
+	if cmd == nil {
+		t.Fatal("模态视图下 Ctrl+C 没有退出 —— 用户被困住了")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("Ctrl+C 返回的不是退出命令")
+	}
+	// 断言 Update **返回的**模型，而不是 Update 之前的 `m`：读 `m.stack[1]`
+	// 只是靠 slice 共享底层数组侥幸成立（forward 里是 `m.stack[top] = next`
+	// 原地写）—— 哪天有人给 Update 加一句 `slices.Clone(m.stack)`，
+	// 那条断言会静默变成空转：永远绿，什么也不验。
+	if top := next.(Model).stack[1].(modalFakeView); len(top.seen) != 0 {
+		t.Errorf("Ctrl+C 被转给了视图: %v", top.seen)
+	}
+}
+
+// 非模态视图的行为一个字都不能变：q 退出、Esc 弹栈。
+// 这条是回归保护 —— 改全局按键最容易伤到的就是这里。
+func TestApp_非模态视图q与Esc照旧(t *testing.T) {
+	root := New(fakeView{title: "根"})
+	pushed, _ := root.Update(pushMsg{v: modalFakeView{modal: false}})
+	m := pushed.(Model)
+
+	_, cmd := m.Update(key("q"))
+	if cmd == nil {
+		t.Fatal("非模态视图下 q 没退出")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("q 返回的不是退出命令")
+	}
+
+	next, _ := m.Update(key("esc"))
+	if n := len(next.(Model).stack); n != 1 {
+		t.Errorf("Esc 之后栈深 = %d, want 1", n)
+	}
+}
+
+// **只有栈顶的模态性算数**：栈底模态、栈顶非模态时，按键不该被拦。
+//
+// 这条守的是 topModal 注释里那句"只看栈顶"。不测的话，
+// 把实现改成"栈里任何一层模态就独占"也能过 —— 而那种实现下，
+// 用户在栈顶（非模态）按 q 会发现退不出去，因为底下某一层还开着输入框。
+func TestApp_只看栈顶的模态性(t *testing.T) {
+	root := New(modalFakeView{modal: true})                    // 栈底：模态
+	pushed, _ := root.Update(pushMsg{v: fakeView{title: "顶"}}) // 栈顶：非模态
+	m := pushed.(Model)
+
+	_, cmd := m.Update(key("q"))
+	if cmd == nil {
+		t.Fatal("栈顶非模态时 q 被拦住了 —— 用户退不出去")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("q 返回的不是退出命令")
+	}
+}
+
+// **根视图不能吞按键** —— 这条以前没人钉住。
+//
+// internal/tui 的既有测试全部直接调 view.Update（library_test /
+// modelview_test 无一例外），所以"根视图不转发按键"这类回归
+// 一条测试都抓不到。实测：在 `case tea.KeyMsg` 的内层 switch 之后
+// 插一句 `return m, nil`，**已提交的全部测试仍然全绿** ——
+// 而真终端里模型库的 ↓/j/↑/k/r/enter 全部失效，整个界面不可导航。
+//
+// 这正是 app.go 开头那段注释讲的漏法（单测绿、真终端坏），
+// 只不过方向相反：模态那次是根视图**多**处理了按键，
+// 这条守的是它**少**转了按键。
+//
+// 三格各自守哪条路径，是实测出来的分工、不是设计出来的：
+//   - 非模态两格走根视图末尾的兜底 forward，守的是那句转发；
+//   - 模态那格走的是模态分支的 early return，**到不了兜底** ——
+//     把模态分支改成 `return m, nil` 时只有它会红，而把兜底掐掉时
+//     它仍然绿。别把它当成兜底的守卫。
+func TestApp_根视图不吞按键(t *testing.T) {
+	cases := []struct {
+		name  string
+		modal bool
+		key   string
+	}{
+		{"非模态+j", false, "j"},
+		{"非模态+up", false, "up"},
+		{"模态+j", true, "j"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := New(fakeView{title: "根"})
+			pushed, _ := root.Update(pushMsg{v: modalFakeView{modal: tc.modal}})
+			m := pushed.(Model)
+
+			next, _ := m.Update(key(tc.key))
+			top := next.(Model).stack[len(next.(Model).stack)-1].(modalFakeView)
+			if len(top.seen) != 1 || top.seen[0] != tc.key {
+				t.Errorf("栈顶视图收到的按键 = %v, want [%s] —— "+
+					"根视图把普通按键吞了，真终端里整个界面会不可导航",
+					top.seen, tc.key)
+			}
+		})
+	}
+}
