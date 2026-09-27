@@ -6,12 +6,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"unicode/utf8"
 
 	"github.com/sillydong/modelview/internal/discover"
+	"github.com/sillydong/modelview/internal/humanize"
 )
 
 // runScan 扫描本机模型目录并输出。
+//
+// **非 JSON 的那条分支生产路径上已经没有调用方**（无参数时进 TUI 了），
+// 但它不是死代码：`TestRunScan_没有模型时也要提未完成的下载` 直接调它，
+// 而那条测试守着的是"首次 pull 到一半时，未完成的下载必须被说出来" ——
+// 全工具唯一一条会引导破坏性操作的提示。
+//
+// 第二版注释里还写过"命令行看到的与界面里显示的必须是同一批信息"，
+// **那句话是错的**：scanLine 的最后一列是完整路径，TUI 的行里没有路径列。
+// 两者共享的是"取原因"（discover.ErrReason）与数字格式化（internal/humanize），
+// 不是同一段渲染代码。别拿一句不成立的话当保留理由。
+//
+// 等 TUI 稳定后再定：删掉非 JSON 分支（连测试一起），还是给它一个 --no-tui。
 //
 // **异步分层**：Scan 只 stat，瞬时返回，先把首屏打出来；
 // 再逐个 Fill 补格式与参数量，每读完一个就地刷新那一行。
@@ -43,7 +55,7 @@ func runScan(ctx context.Context, asJSON bool) error {
 	if n := len(res.InProgress); n > 0 {
 		fmt.Printf("另有 %d 个未完成的下载（合计 %s），不算可回收：\n"+
 			"  那是 ollama 正在下载或上次中断留下的，删掉会毁掉下载\n",
-			n, humanBytes(totalSize(res.InProgress)))
+			n, humanize.Bytes(totalSize(res.InProgress)))
 	}
 
 	if len(res.Items) == 0 {
@@ -60,7 +72,7 @@ func runScan(ctx context.Context, asJSON bool) error {
 	fmt.Printf("发现 %d 个模型", len(res.Items))
 	if n := len(res.Orphans); n > 0 {
 		fmt.Printf("，另有 %d 个孤儿 blob 可回收 %s",
-			n, humanBytes(totalSize(res.Orphans)))
+			n, humanize.Bytes(totalSize(res.Orphans)))
 	}
 	if len(res.Items) > 1 {
 		fmt.Print("（正在读取格式与参数量…）")
@@ -89,7 +101,7 @@ func runScan(ctx context.Context, asJSON bool) error {
 	// 混在模型列表里会让人以为那也是模型
 	if len(res.Orphans) > 0 {
 		fmt.Printf("\n孤儿 blob（没有被任何模型引用，可回收 %s）\n",
-			humanBytes(totalSize(res.Orphans)))
+			humanize.Bytes(totalSize(res.Orphans)))
 		for _, o := range res.Orphans {
 			fmt.Println(orphanLine(o))
 		}
@@ -111,10 +123,11 @@ func scanLine(it discover.Item) string {
 	// 没有一条路径会产出空名字 —— 而一段永远不会执行的兜底并不提供保护，
 	// 只是让"生产者漏填"这件事看起来已经被处理了。
 	out := fmt.Sprintf("  %-28s %-11s %12s  %s",
-		truncate(it.Name, 28), it.Source, humanBytes(it.Size), it.Path)
+		humanize.Truncate(it.Name, 28), it.Source, humanize.Bytes(it.Size), it.Path)
 
 	if it.Err != "" {
-		return out + "  ⚠" + it.Err
+		// 与 TUI 共用同一个"取原因"的函数：路径在最后一列已经有了
+		return out + "  ⚠" + discover.ErrReason(it)
 	}
 	if it.Format != "" {
 		out += "  " + string(it.Format)
@@ -123,7 +136,7 @@ func scanLine(it discover.Item) string {
 		out += " · " + it.Arch
 	}
 	if it.Params > 0 {
-		out += " · " + humanCount(it.Params) + " 个参数"
+		out += " · " + humanize.Count(it.Params) + " 个参数"
 	}
 	return out
 }
@@ -133,7 +146,7 @@ func scanLine(it discover.Item) string {
 // 只显示文件名不显示全路径：全路径里那一长串 sha256 已经把
 // 有用信息占满了，而用户关心的是"哪个文件、多大"。
 func orphanLine(o discover.Item) string {
-	return fmt.Sprintf("  %-72s %12s", filepath.Base(o.Path), humanBytes(o.Size))
+	return fmt.Sprintf("  %-72s %12s", filepath.Base(o.Path), humanize.Bytes(o.Size))
 }
 
 // totalSize 返回一组条目的字节总数。
@@ -143,40 +156,4 @@ func totalSize(items []discover.Item) int64 {
 		n += it.Size
 	}
 	return n
-}
-
-// truncate 按**字节**截断到 n 以内，超出时以 "..." 结尾。
-//
-// 按字节而不是按 rune：用途是给列宽封顶，而一个汉字 3 字节却只占
-// 2 列 —— 精确对齐要算显示宽度，不值得为它引入依赖。
-// 要说清楚的是：**封的是字节数这个上限，不是"对齐"** ——
-// 28 字节的中文名在屏幕上占 56 列，比同长度的 ASCII 宽一倍，
-// 列宽仍然对不齐。这是刻意的取舍：不引依赖，接受中文名那列偏宽。
-//
-// **切点必须回退到 rune 边界**：否则 `qwen2.5-3b-中文微调.gguf`
-// 这种名字会切出半个汉字，输出里出现替换字节 —— 那不只是难看，
-// 是**非法 UTF-8**（实测 `truncate("中文模型名很长的名字abc", 8)`
-// 会切出 "中\xe6\x96..."）。回退后可能短一两个字节，
-// 那没关系 —— 列宽是上限，不是配额。
-//
-// 截断**不是"只影响观感"**：完整路径在最后一列不假，
-// 但第一列的名字被切掉的部分，用户得去最后一列里自己找回来。
-// 所以宁可短一点也不切出坏字节。
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	// 给 "..." 留位置；n 太小时连省略号都放不下，那就只截 n 字节
-	cut := n
-	if n > 3 {
-		cut = n - 3
-	}
-	// 回退到 rune 边界：cut 落在多字节字符中间时往前挪
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	if n <= 3 {
-		return s[:cut]
-	}
-	return s[:cut] + "..."
 }

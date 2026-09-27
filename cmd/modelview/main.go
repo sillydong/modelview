@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/sillydong/modelview/internal/analyze"
+	"github.com/sillydong/modelview/internal/humanize"
 	"github.com/sillydong/modelview/internal/model"
 	"github.com/sillydong/modelview/internal/parser"
 )
@@ -68,12 +69,14 @@ func run() error {
 	}
 
 	// 无参数或显式 scan 都进模型库。
-	// ④b 会把这里换成 TUI；现在先给非交互输出
+	//
+	// **--json 走非交互**：JSON 是一个整体，不能流式拼，
+	// 更不该在管道里弹出一个 TUI（那会把 ANSI 转义混进 jq 的输入）。
 	if flag.NArg() == 0 || flag.Arg(0) == "scan" {
-		if !*asJSON {
-			fmt.Fprintln(os.Stderr, "提示：交互界面在计划 ④b；当前为列表输出")
+		if *asJSON {
+			return runScan(context.Background(), true)
 		}
-		return runScan(context.Background(), *asJSON)
+		return runTUI()
 	}
 
 	// **这里没有"缺少参数"的分支**：NArg()==0 已经在上面走了 scan
@@ -147,13 +150,13 @@ func runStats(m *model.Model, sampleLimit int, noCache bool) error {
 func printSummary(m *model.Model, withStats bool) {
 	fmt.Printf("文件     %s\n", m.Path)
 	fmt.Printf("格式     %s %s\n", m.Format, m.Version)
-	fmt.Printf("大小     %s\n", humanBytes(m.FileSize))
+	fmt.Printf("大小     %s\n", humanize.Bytes(m.FileSize))
 	fmt.Printf("架构     %s\n", orDash(m.Arch))
 	fmt.Printf("元数据   %d 条\n", len(m.Metadata))
 	fmt.Printf("张量     %d 个\n", len(m.Tensors))
 	// 精确值 + SI 前缀缩写。刻意不用 "B" ——
 	// 上一行的 GiB 已经让读者把 B 理解成字节，3.086 B 会被读成"3 个字节"。
-	fmt.Printf("总参数   %s（%s）\n", humanCount(m.TotalParams()), commaInt(m.TotalParams()))
+	fmt.Printf("总参数   %s（%s）\n", humanize.Count(m.TotalParams()), humanize.Comma(m.TotalParams()))
 
 	if withStats {
 		ok, failed := 0, 0
@@ -193,8 +196,8 @@ func printSummary(m *model.Model, withStats bool) {
 	// 不解释这个差值，用户会以为算错了；解释错了更糟。
 	if len(m.TiedGroups) > 0 {
 		fmt.Printf("\n存储     张量逻辑字节 %s，去重后 %s（差 %s，即别名重复计入的部分）\n",
-			humanBytes(m.TensorBytes()), humanBytes(m.StorageBytes),
-			humanBytes(m.TensorBytes()-m.StorageBytes))
+			humanize.Bytes(m.TensorBytes()), humanize.Bytes(m.StorageBytes),
+			humanize.Bytes(m.TensorBytes()-m.StorageBytes))
 		for _, g := range m.TiedGroups {
 			fmt.Printf("         权重绑定: %s\n", strings.Join(g, " ≡ "))
 		}
@@ -226,17 +229,17 @@ func printSummary(m *model.Model, withStats bool) {
 			extra := tensorQuantString(t)
 			if extra != "" {
 				fmt.Printf("  %-56s %-20s %-8s %12s  %s  %s\n",
-					t.Name, dimsString(t.Dims), t.Dtype, humanBytes(t.ByteSize),
+					t.Name, humanize.Dims(t.Dims), t.Dtype, humanize.Bytes(t.ByteSize),
 					statsString(t.Stats), extra)
 				continue
 			}
 			fmt.Printf("  %-56s %-20s %-8s %12s  %s\n",
-				t.Name, dimsString(t.Dims), t.Dtype, humanBytes(t.ByteSize),
+				t.Name, humanize.Dims(t.Dims), t.Dtype, humanize.Bytes(t.ByteSize),
 				statsString(t.Stats))
 			continue
 		}
 		fmt.Printf("  %-56s %-20s %-8s %12s\n",
-			t.Name, dimsString(t.Dims), t.Dtype, humanBytes(t.ByteSize))
+			t.Name, humanize.Dims(t.Dims), t.Dtype, humanize.Bytes(t.ByteSize))
 	}
 }
 
@@ -290,13 +293,13 @@ func quantExistingString(q *model.QuantInfo) string {
 		return ""
 	}
 	out := fmt.Sprintf("%s %.4g bit/权重 %s 子块 scale[%s, %s] 中位 %s",
-		q.Scheme, q.BitsPerWeight, humanCount(q.SubBlocks),
+		q.Scheme, q.BitsPerWeight, humanize.Count(q.SubBlocks),
 		humanFloat(q.ScaleMin), humanFloat(q.ScaleMax), humanFloat(q.ScaleMedian))
 	// 被压平的**子块**数是最直接的证据，必须显示。
 	// 单位必须写"子块"而不是"块"：同一行前面刚写过"N 子块"，
 	// 而一个块含 8 或 16 个子块，写成"块"会差一个数量级
 	if q.ZeroScaleBlocks > 0 {
-		out += fmt.Sprintf(" ⚠压平 %s 子块", humanCount(q.ZeroScaleBlocks))
+		out += fmt.Sprintf(" ⚠压平 %s 子块", humanize.Count(q.ZeroScaleBlocks))
 	}
 	// 被压得最狠的那个子块。model.QuantInfo 的注释承诺了界面上要显示它
 	//（"第 N 个子块（张量内第 N×BlockElems 个权重）"），
@@ -365,77 +368,9 @@ func humanRatio(v float64) string {
 	return fmt.Sprintf("%.2f%%", v*100)
 }
 
-func dimsString(dims []int64) string {
-	var sb strings.Builder
-	sb.WriteByte('[')
-	for i, d := range dims {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		sb.WriteString(strconv.FormatInt(d, 10))
-	}
-	sb.WriteByte(']')
-	return sb.String()
-}
-
 func orDash(s string) string {
 	if s == "" {
 		return "-"
 	}
 	return s
-}
-
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	units := []string{"KiB", "MiB", "GiB", "TiB"}
-	v := float64(n)
-	for _, u := range units {
-		v /= unit
-		if v < unit {
-			return fmt.Sprintf("%.2f %s", v, u)
-		}
-	}
-	return fmt.Sprintf("%.2f PiB", v/unit)
-}
-
-// humanCount 用 SI 前缀（K/M/G/T，1000 进制）缩写参数量。
-//
-// 刻意不使用 "B"：摘要里同一屏的 humanBytes 用 "B" 表示字节，
-// 两个 B 并排出现会让 "3.086 B" 被误读成三个字节。
-func humanCount(n int64) string {
-	if n < 1000 {
-		return strconv.FormatInt(n, 10)
-	}
-	units := []string{"K", "M", "G", "T"}
-	v := float64(n)
-	for _, u := range units {
-		v /= 1000
-		if v < 1000 {
-			return fmt.Sprintf("%.3f %s", v, u)
-		}
-	}
-	return fmt.Sprintf("%.3f P", v/1000)
-}
-
-// commaInt 给整数加千位分隔符，用于展示精确值。
-func commaInt(n int64) string {
-	s := strconv.FormatInt(n, 10)
-	neg := strings.HasPrefix(s, "-")
-	if neg {
-		s = s[1:]
-	}
-	var sb strings.Builder
-	if neg {
-		sb.WriteByte('-')
-	}
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			sb.WriteByte(',')
-		}
-		sb.WriteRune(c)
-	}
-	return sb.String()
 }
