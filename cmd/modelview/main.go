@@ -212,7 +212,7 @@ func printSummary(m *model.Model, withStats bool) {
 	for _, d := range dtypes {
 		note := ""
 		if bpw := d.BitsPerWeight(); bpw > 0 {
-			note = fmt.Sprintf("  %.4g bit/权重", bpw)
+			note = fmt.Sprintf("  %s bit/权重", render.BitsPerWeight(bpw))
 		}
 		fmt.Printf("  %-10s %4d 个张量%s\n", d, hist[d], note)
 	}

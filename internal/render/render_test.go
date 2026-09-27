@@ -9,48 +9,6 @@ import (
 	"github.com/sillydong/modelview/internal/model"
 )
 
-func TestHumanFloat(t *testing.T) {
-	tests := []struct {
-		in   float64
-		want string
-	}{
-		{0, "0"},
-		{1.5, "1.5000"},
-		{-0.25, "-0.2500"},
-		{1e-5, "1e-05"}, // 小值必须走科学计数，否则会打成 0.0000
-		{1e6, "1e+06"},
-	}
-	for _, tt := range tests {
-		if got := Float(tt.in); got != tt.want {
-			t.Errorf("Float(%v) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-	// 权重的典型量级必须打得出可读结果，不能全是 0.0000
-	if got := Float(0.026777247); got == "0.0000" {
-		t.Errorf("Float(0.026777247) = %q —— 权重级别的数值被打成了 0", got)
-	}
-	if got := Float(math.NaN()); got != "NaN" {
-		t.Errorf("Float(NaN) = %q", got)
-	}
-}
-
-func TestHumanRatio(t *testing.T) {
-	tests := []struct {
-		in   float64
-		want string
-	}{
-		{0, "0"},
-		{0.5, "50.00%"},
-		{0.00007, "0.007%"},
-		{1, "100.00%"},
-	}
-	for _, tt := range tests {
-		if got := Ratio(tt.in); got != tt.want {
-			t.Errorf("Ratio(%v) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 // 采样过的统计必须带 ≈ 标记 —— 把样本统计量当成全量是误导。
 func TestStatsString(t *testing.T) {
 	s := &model.Stats{Min: -1, Max: 1, Mean: 0, Std: 0.5, ZeroRatio: 0.1}
@@ -85,6 +43,26 @@ func TestStatsString_非有限值必须显示(t *testing.T) {
 	s = &model.Stats{Min: 1, Max: 2, Mean: 1.5, Std: 0.5}
 	if got := Stats(s); strings.Contains(got, "NaN") || strings.Contains(got, "Inf") {
 		t.Errorf("无非有限值时不显示，实际: %q", got)
+	}
+}
+
+// **整串精确断言，不是 Contains**。
+//
+// 用 Contains 的话，把 μ 与 σ 的取值互换、把 Min 与 Max 互换、
+// 把 "μ=" 改成 "x=" —— 三种都会全绿（实测），因为
+// "这些数字出现过"与"这个数字挂在这个标签下"是两回事。
+// 而这个包的**全部意义**就是"两处显示同一个数"，
+// 挂错标签等于两个数。
+func TestStats_整串精确(t *testing.T) {
+	s := &model.Stats{Count: 8, Min: -1.5, Max: 2.5, Mean: 0.125, Std: 0.75,
+		ZeroRatio: 0.25, OutlierRatio: 0.125}
+	// want 是先按约定手算、再与实际输出核对得到的，不是从实现里抄的：
+	// Float 在 [1e-3, 1e5) 内走定点 4 位小数（-1.5 → "-1.5000"，ASCII 减号），
+	// Percent 走 "%.2f%%"（0.25 → "25.00%"）。
+	// 手算时这里踩过两次：Min 不是 "-1.5"（少一位），减号也不是排印的 "−"。
+	want := "[-1.5000, 2.5000] μ=0.1250 σ=0.7500 零=25.00% 离群=12.50%"
+	if got := Stats(s); got != want {
+		t.Errorf("Stats() =\n got %q\nwant %q —— 数字与标签的对应关系变了", got, want)
 	}
 }
 
@@ -132,6 +110,34 @@ func TestQuantSimString_采样标记(t *testing.T) {
 	})
 	if !strings.Contains(sampled, "≈") {
 		t.Errorf("采样模拟必须带 ≈: %q", sampled)
+	}
+}
+
+// QuantSim 的整串精确断言：锁住分隔符、档序、以及每个数字挂在哪一档下。
+//
+// 与 Stats 那条同一个理由：Contains 拦不住"分隔符从 ' | ' 改成 ' / '"，
+// 也拦不住两档之间的数字互换（实测都是绿的）。
+func TestQuantSim_整串精确(t *testing.T) {
+	sims := []model.QuantSim{
+		{Target: "Q8_0", BitsPerWeight: 8.5, SNRDB: 45.2, Compression: 3.76},
+		{Target: "Q6_K", BitsPerWeight: 6.5625, SNRDB: 35.1, Compression: 4.88},
+		{Target: "Q4_K", BitsPerWeight: 4.5, SNRDB: 24.8, Compression: 7.11},
+	}
+	// 同样先手算：位宽是精确值（6.5625 不是 6.562），
+	// 档与档之间是 " | "（竖线前后各一个空格）
+	want := "模拟[Q8_0 8.5 bit/权重 45.2dB ×3.76 | " +
+		"Q6_K 6.5625 bit/权重 35.1dB ×4.88 | " +
+		"Q4_K 4.5 bit/权重 24.8dB ×7.11]"
+	if got := QuantSim(sims); got != want {
+		t.Errorf("QuantSim() =\n got %q\nwant %q", got, want)
+	}
+
+	// ≈ 的位置也是整串的一部分：必须在 "模拟[" 之前，不能只在串里某个地方
+	sampled := []model.QuantSim{{Target: "Q8_0", BitsPerWeight: 8.5, SNRDB: 45.2,
+		Compression: 3.76, Sampled: true}}
+	wantSampled := "≈模拟[Q8_0 8.5 bit/权重 45.2dB ×3.76]"
+	if got := QuantSim(sampled); got != wantSampled {
+		t.Errorf("采样 QuantSim() =\n got %q\nwant %q", got, wantSampled)
 	}
 }
 
@@ -192,5 +198,215 @@ func TestTensorQuantString(t *testing.T) {
 	got = TensorQuant(&model.Tensor{QuantSims: sims, Quant: quant})
 	if !strings.Contains(got, "模拟") {
 		t.Errorf("两者都有时应优先显示模拟: %q", got)
+	}
+}
+
+// 位宽是文件里的精确值，少一位就是错的 —— 这组是"%.4g 抹掉一位"的回归保护。
+func TestBitsPerWeight(t *testing.T) {
+	tests := []struct {
+		in   float64
+		want string
+	}{
+		// 下面四个都以 x.0625 / x.4375 结尾，正是 %.4g 抹掉一位的那批：
+		// 6.5625→"6.562"、3.4375→"3.438"、2.0625→"2.062"、1.5625→"1.562"
+		{6.5625, "6.5625"},
+		{3.4375, "3.4375"},
+		{2.0625, "2.0625"},
+		{1.5625, "1.5625"},
+		// 整数位宽不能因为去尾零而被打成 "32.0000"，也不能丢掉整数部分
+		{4.5, "4.5"},
+		{8.5, "8.5"},
+		{32, "32"},
+		{0, "0"},
+		// 边界输入。位宽的前提是"正的、有限的、1/16 的整数倍"，
+		// 这些都在前提之外，结果无意义 —— 但**必须钉住**，
+		// 否则换实现时没人知道它们会变成什么：
+		{math.NaN(), "NaN"},
+		{math.Inf(1), "+Inf"},
+		{math.Inf(-1), "-Inf"},
+		{-6.5625, "-6.5625"}, // 负号会原样留着，不做 abs
+		{5e-324, "0"},        // 次正规数被 4 位小数抹成 0：**非零打成零**
+	}
+	for _, tt := range tests {
+		if got := BitsPerWeight(tt.in); got != tt.want {
+			t.Errorf("BitsPerWeight(%v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// QuantSimLines 给 TUI 的列对齐版：档名左对齐、位宽右对齐。
+//
+// **档名必须长短不一**（IQ2_XXS 7 个字符，Q8_0/Q4_K 4 个）：
+// 原先三个 fixture 档名都是 4 个字符，wTarget 恰好等于每行的档名长度，
+// 于是把档名补齐整个删掉（`fmt.Sprintf("%-*s", wTarget, s.Target)`
+// 换成 `s.Target`）测试**仍然全绿**（实测漏过一轮）—— 左对齐那一半
+// 等于没有验。位宽右对齐那一半当时是被抓住的，漏的只有档名。
+//
+// IQ2_XXS 顺带把 2.0625 这个位宽拉进单元覆盖：本机没有 IQ 量化的
+// 真实文件，它此前只有 TestBitsPerWeight 的表驱动覆盖。
+func TestQuantSimLines(t *testing.T) {
+	sims := []model.QuantSim{
+		{Target: "IQ2_XXS", BitsPerWeight: 2.0625, SNRDB: 20.9, Compression: 7.11},
+		{Target: "Q8_0", BitsPerWeight: 8.5, SNRDB: 30.1, Compression: 3.76},
+		{Target: "Q4_K", BitsPerWeight: 4.5, SNRDB: 24.8, Compression: 5.33},
+	}
+	lines := QuantSimLines(sims)
+	// want 由列宽手推，不是跑出来抄的：档名列宽 = max(7,4,4) = 7，
+	// 位宽列宽 = max(len("2.0625"), len("8.5"), len("4.5")) = 6。
+	// 所以短档名那两行是 3 个补齐空格 + 1 个分隔空格 + 3 个位宽右对齐空格
+	// = 档名与数字之间 7 个空格；最长的 IQ2_XXS 两列都顶满，各只隔 1 个。
+	want := []string{
+		"IQ2_XXS 2.0625 bit/权重 20.9dB ×7.11",
+		"Q8_0       8.5 bit/权重 30.1dB ×3.76",
+		"Q4_K       4.5 bit/权重 24.8dB ×5.33",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("每档一行，得到 %d 行: %q", len(lines), lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("第 %d 行 = %q，want %q（档名左对齐、位宽右对齐）",
+				i, lines[i], want[i])
+		}
+		if strings.Contains(lines[i], "模拟[") || strings.Contains(lines[i], "≈") {
+			t.Errorf("第 %d 行不该带包装或 ≈: %q", i, lines[i])
+		}
+	}
+	// 采样时**每一行**都要带 ≈，且与全量版只差这一个前缀。
+	//
+	// 少了它就是把采样值当精确值显示，而采样是常态：默认上限 1e7 个元素，
+	// 一个 4096×4096 的 f16 矩阵就有 1677 万。单行版 QuantSim 一直打着
+	// "≈模拟[...]"，多行版漏掉过——两个入口对同一批数字给出不同结论。
+	allSampled := make([]model.QuantSim, len(sims))
+	copy(allSampled, sims)
+	for i := range allSampled {
+		allSampled[i].Sampled = true
+	}
+	sampledLines := QuantSimLines(allSampled)
+	if len(sampledLines) != len(want) {
+		t.Fatalf("采样时行数变了: %q", sampledLines)
+	}
+	for i, ln := range sampledLines {
+		if want := "≈" + lines[i]; ln != want {
+			t.Errorf("采样时第 %d 行 = %q，want %q —— 采样值不能打得跟精确值一样",
+				i, ln, want)
+		}
+	}
+
+	// 口径是 **sims[0]**（与单行版 QuantSim 一致），不是逐档判断：
+	// 逐档判断会做出参差不齐的列，也与单行版口径不符。
+	// 真实数据里三档出自同一次分析，Sampled 必然一致，这里是把口径钉死。
+	firstOnly := make([]model.QuantSim, len(sims))
+	copy(firstOnly, sims)
+	firstOnly[0].Sampled = true
+	for i, ln := range QuantSimLines(firstOnly) {
+		if !strings.HasPrefix(ln, "≈") {
+			t.Errorf("sims[0] 采样时第 %d 行缺 ≈: %q", i, ln)
+		}
+	}
+	restOnly := make([]model.QuantSim, len(sims))
+	copy(restOnly, sims)
+	restOnly[1].Sampled = true
+	restOnly[2].Sampled = true
+	for i, ln := range QuantSimLines(restOnly) {
+		if strings.HasPrefix(ln, "≈") {
+			t.Errorf("口径是 sims[0]（与单行版一致），第 %d 行不该带 ≈: %q", i, ln)
+		}
+	}
+
+	// 空输入返回 nil：调用方按 len()==0 判断"没有模拟"，不该拿到一个空串元素
+	if got := QuantSimLines(nil); got != nil {
+		t.Errorf("空输入应返回 nil，实际 %q", got)
+	}
+}
+
+// QuantExistingLines 拆成能塞进 80 列的行；拼回来必须与单行版一字不差
+// （唯一的例外是抽样中位数，两类输出都带标记，见下）。
+func TestQuantExistingLines(t *testing.T) {
+	// SubBlocks 刻意取到 124400（>1000）：真实量化张量的子块数是 10^5~10^7
+	// 量级，会走 humanize.Count 的 "124.400 K" 缩写路径。原先写 800
+	// 低于 1000 的阈值，把 Count(...) 换成裸整数输出一模一样、测试全绿
+	// （实测漏网）—— 这条路径此前全仓没有覆盖。
+	q := &model.QuantInfo{
+		Scheme: "Q4_K", BitsPerWeight: 4.5, Blocks: 100, SubBlocks: 124400,
+		BlockElems: 32, ScaleMin: 0.001, ScaleMax: 0.5, ScaleMedian: 0.02,
+		ZeroScaleBlocks: 3, FlattestIndex: 7, FlattestRatio: 0.02,
+	}
+	lines := QuantExistingLines(q)
+	want := []string{
+		"Q4_K 4.5 bit/权重 124.400 K 子块",
+		"scale[0.0010, 0.5000] 中位 0.0200",
+		"⚠压平 3 子块 最扁 #7（比值 0.0200）",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("得到 %d 行 %q，want %d 行", len(lines), lines, len(want))
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("第 %d 行 = %q，want %q", i, lines[i], want[i])
+		}
+	}
+	// 这条**看着**自我指涉，但**不能删**：它和上面的逐行 want 合起来才把
+	// CLI 的单行输出钉成常量。删掉它，"join 分隔符从 " " 改成 "  "" 那条
+	// 变异就漏网 —— 上面的 want 只钉每一行，分隔符只活在这一句里。
+	if got, wantJoined := strings.Join(lines, " "), QuantExisting(q); got != wantJoined {
+		t.Errorf("拆行拼回来与单行版不一致:\n got %q\nwant %q", got, wantJoined)
+	}
+
+	// 中位数可能来自抽样（子块数超预算时，见 model.QuantInfo 的说明），
+	// 抽样值必须显示出来 —— 与 Stats 的 ≈ 同一个约定。
+	// 这里要求：true 与 false 的输出必须不同，且**差别只在中位数那一处**。
+	sampled := *q
+	sampled.ScaleMedianSampled = true
+	gotSampled := QuantExistingLines(&sampled)
+	if len(gotSampled) != len(want) {
+		t.Fatalf("只该中位数变，行数却变了: %q", gotSampled)
+	}
+	for i := range want {
+		if i != 1 && gotSampled[i] != lines[i] {
+			t.Errorf("只有第 2 行该变，第 %d 行也变了:\n 全量 %q\n 抽样 %q",
+				i+1, lines[i], gotSampled[i])
+		}
+	}
+	if gotSampled[1] == lines[1] {
+		t.Error("抽样中位数必须显示出来 —— 否则用户会把它当全量精确值")
+	}
+	if wantMedian := "scale[0.0010, 0.5000] 中位 ≈0.0200（抽样）"; gotSampled[1] != wantMedian {
+		t.Errorf("抽样中位数 = %q，want %q", gotSampled[1], wantMedian)
+	}
+	// 全量时**一个标记都不许有**，否则等于狼来了
+	if strings.Contains(lines[1], "≈") || strings.Contains(lines[1], "抽样") {
+		t.Errorf("全量中位数不该带抽样标记: %q", lines[1])
+	}
+
+	// 两个警告都没有时，第三行**不返回**（空行会让 TUI 白占一行）
+	quiet := &model.QuantInfo{Scheme: "Q8_0", BitsPerWeight: 8.5, SubBlocks: 2,
+		ScaleMin: 0.0625, ScaleMax: 0.5, ScaleMedian: 0.2, FlattestRatio: 1}
+	if got := QuantExistingLines(quiet); len(got) != 2 {
+		t.Errorf("没有警告时不该有第三行，实际 %q", got)
+	}
+
+	// 只有一个警告时，第三行只放那一个 —— 存在条件不能写反
+	onlyFlat := &model.QuantInfo{Scheme: "Q4_K", BitsPerWeight: 4.5, SubBlocks: 8,
+		ScaleMin: 0.1, ScaleMax: 0.5, ScaleMedian: 0.2,
+		ZeroScaleBlocks: 5, FlattestRatio: 1}
+	if got := QuantExistingLines(onlyFlat); len(got) != 3 ||
+		got[2] != "⚠压平 5 子块" {
+		t.Errorf("只该有压平那一行，实际 %q", got)
+	}
+	onlyThin := &model.QuantInfo{Scheme: "Q4_K", BitsPerWeight: 4.5, SubBlocks: 8,
+		ScaleMin: 0.1, ScaleMax: 0.5, ScaleMedian: 0.2,
+		FlattestIndex: 5562, FlattestRatio: 0}
+	if got := QuantExistingLines(onlyThin); len(got) != 3 ||
+		got[2] != "最扁 #5562（比值 0）" {
+		t.Errorf("只该有最扁那一行，实际 %q", got)
+	}
+
+	// nil 仍返回空 —— 调用方（TUI）按 len()==0 判断"没有诊断"
+	if got := QuantExistingLines(nil); len(got) != 0 {
+		t.Errorf("nil 应返回空，实际 %q", got)
+	}
+	if got := QuantExisting(nil); got != "" {
+		t.Errorf("nil 的单行输出仍是空串，实际 %q", got)
 	}
 }

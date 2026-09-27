@@ -4,10 +4,16 @@
 // 各写一份的后果不是报错，是"命令行列出的模型是 1.80 GiB、
 // 界面里点进去是 1.8 GiB"—— 用户会以为是两个不同的数，
 // 而没有任何东西会红。计划 ④b 的 TUI 要用这同一份。
+//
+// 判据是**这个量在别的语境里还有没有意义**，不是入参类型：
+// Bytes/Count/Percent/Float 在任何程序里都成立，所以在这里；
+// 位宽那种只在量化语境里才有意义的量留在 render（BitsPerWeight）——
+// 它收的也是裸 float64，按入参类型判会得出相反的结论。
 package humanize
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -121,4 +127,43 @@ func Truncate(s string, n int) string {
 		return s[:cut]
 	}
 	return s[:cut] + "..."
+}
+
+// Float 用 4 位有效数字打印统计量。
+//
+// 权重的动态范围常常横跨好几个数量级（1e-5 到 1e-1），
+// 定点格式会让小值全变成 0.0000。
+//
+// **别拿它打位宽**：6.5625 恰好打对、3.4375 会打成 3.438 ——
+// 一半对一半错最难查。位宽是文件里的精确值，用 render.BitsPerWeight。
+func Float(v float64) string {
+	switch {
+	case v == 0:
+		return "0"
+	case math.IsNaN(v):
+		return "NaN"
+	case math.IsInf(v, 1):
+		return "+Inf"
+	case math.IsInf(v, -1):
+		return "-Inf"
+	}
+	if a := math.Abs(v); a >= 1e-3 && a < 1e5 {
+		return strconv.FormatFloat(v, 'f', 4, 64)
+	}
+	return strconv.FormatFloat(v, 'g', 4, 64)
+}
+
+// Percent 把 0..1 的比例打成百分数。
+//
+// 叫 Percent 而不是 Ratio：它**返回的就是百分数**（"50.00%"），
+// 与 Bytes/Count/Comma 一样"输出是什么就叫什么"—— 叫 Ratio 会让人
+// 以为打的是 0.5。
+func Percent(v float64) string {
+	if v == 0 {
+		return "0"
+	}
+	if v < 0.0001 {
+		return fmt.Sprintf("%.2g%%", v*100)
+	}
+	return fmt.Sprintf("%.2f%%", v*100)
 }

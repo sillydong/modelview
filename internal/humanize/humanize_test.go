@@ -1,15 +1,20 @@
 package humanize
 
 import (
+	"math"
 	"testing"
 	"unicode/utf8"
 )
 
-// 下面 5 个测试是从 cmd/modelview 搬过来的（原本测 humanBytes/humanCount/
-// commaInt/dimsString/truncate）。**测试内容一字不改** —— 只改了函数名的
-// 首字母与包名。它们的价值就在那些边界和约定上：
+// 下面 7 个测试是从 cmd/modelview 搬过来的（原本测 humanBytes/humanCount/
+// commaInt/dimsString/truncate），TestFloat / TestRatio 则是经 internal/render
+// 二度搬来的（原本测 humanFloat/humanRatio）—— 它们收的是裸 float64、
+// 不知道模型的存在，属于这个包而不是 render。**测试内容一字不改** ——
+// 只改了函数名的首字母、包名与诊断文本里的函数名。它们的价值就在那些边界
+// 和约定上：
 //   - Count 那条断言"任何量级都不出现 B"
 //   - Truncate 那几条中文用例是"切点必须回退到 rune 边界"的证据
+//   - Float 那条"权重级别的数值不能打成 0.0000"
 //
 // 搬的时候如果把测试留在了原处，删函数就等于删掉这些守卫 ——
 // 而它们守的正是 CLI 与 TUI 共用的显示格式。
@@ -159,6 +164,51 @@ func TestTruncate(t *testing.T) {
 		}
 		if tt.want != "" && got != tt.want {
 			t.Errorf("Truncate(%q, %d) = %q, want %q", tt.in, tt.n, got, tt.want)
+		}
+	}
+}
+
+// Float 用 4 位有效数字：权重的动态范围横跨好几个数量级，
+// 定点格式会让小值全变成 0.0000。
+func TestFloat(t *testing.T) {
+	tests := []struct {
+		in   float64
+		want string
+	}{
+		{0, "0"},
+		{1.5, "1.5000"},
+		{-0.25, "-0.2500"},
+		{1e-5, "1e-05"}, // 小值必须走科学计数，否则会打成 0.0000
+		{1e6, "1e+06"},
+	}
+	for _, tt := range tests {
+		if got := Float(tt.in); got != tt.want {
+			t.Errorf("Float(%v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+	// 权重的典型量级必须打得出可读结果，不能全是 0.0000
+	if got := Float(0.026777247); got == "0.0000" {
+		t.Errorf("Float(0.026777247) = %q —— 权重级别的数值被打成了 0", got)
+	}
+	if got := Float(math.NaN()); got != "NaN" {
+		t.Errorf("Float(NaN) = %q", got)
+	}
+}
+
+// Percent 把 0..1 的比例打成百分数。
+func TestRatio(t *testing.T) {
+	tests := []struct {
+		in   float64
+		want string
+	}{
+		{0, "0"},
+		{0.5, "50.00%"},
+		{0.00007, "0.007%"},
+		{1, "100.00%"},
+	}
+	for _, tt := range tests {
+		if got := Percent(tt.in); got != tt.want {
+			t.Errorf("Percent(%v) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
