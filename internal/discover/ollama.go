@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sillydong/modelview/internal/ollamablob"
 )
 
 // ollamaMediaModel 是模型权重那一层。只有它代表模型文件本身。
@@ -43,6 +45,7 @@ type ollamaManifest struct {
 // 这是本工具唯一一条会引导破坏性操作的路径，宁可少报也不能错报。
 // 实测：把一个 manifest 截断（模拟写到一半被打断），它引用的 blob
 // 立刻出现在"孤儿 blob（可回收）"里。
+// 本机现在有 5 个 ollama 模型（含 gpt-oss:20b）。
 func scanOllama(root string) (items, orphans, inProgress []Item, errs []string) {
 	manifestsDir := filepath.Join(root, "manifests")
 
@@ -153,43 +156,6 @@ func readLayerLabel(path, mediaType string) (KV, bool) {
 	return KV{Key: key, Value: v}, true
 }
 
-// IsInProgressBlob 判断一个 blob 文件名是不是"还没下完"。
-//
-// 导出是因为它描述的是 **ollama 在磁盘上的布局**，不止发现逻辑需要：
-// 任何按目录扫 blobs 的地方（测试的语料定位、tools/ 下的脚本）
-// 都得跳过它们 —— 拿一个下到一半的文件当语料，测出来的覆盖率是假的。
-// **别再写第二份判据**：宽一点（Contains "partial"）会让正常 blob 被漏报，
-// 窄一点会让半成品混进"可回收"。
-//
-// ollama 下载时先建 `<name>-partial`（预分配到最终大小，所以**看着是满的**），
-// 另有一批 `<name>-partial-<N>` 分片。它们不是 blob，是下载的中间状态。
-//
-// **报成孤儿是危险的**：实测拉 gpt-oss:20b 到一半时，扫描输出说
-// "另有 17 个孤儿 blob 可回收 12.85 GiB"，而那 12.85 GiB 正是那个
-// 下到一半的模型 —— 用户照着"可回收"去删，就把自己的下载毁了。
-// 与"manifest 读不了就不报孤儿"是同一类问题：把"我不知道"当成"没被引用"。
-//
-// 判据用**精确形状**（sha256- + 64 位十六进制 + -partial...），
-// 不用 strings.Contains(name, "partial")：那样一个名字里恰好含
-// partial 的正常 blob 会被永远排除在孤儿之外，变成一处的静默漏报。
-func IsInProgressBlob(name string) bool {
-	rest, ok := strings.CutPrefix(name, "sha256-")
-	if !ok || len(rest) <= 64 {
-		return false
-	}
-	for _, c := range rest[:64] {
-		if !isHexDigit(c) {
-			return false
-		}
-	}
-	return strings.HasPrefix(rest[64:], "-partial")
-}
-
-// isHexDigit 判断一个字符是不是小写十六进制位。
-func isHexDigit(c rune) bool {
-	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
-}
-
 // findOrphans 返回没有被任何 manifest 引用的 blob。
 //
 // spec §7.2：这是纯增量价值 —— 直接告诉用户哪些磁盘可以释放。
@@ -203,8 +169,8 @@ func findOrphans(root string, referenced map[string]bool) (orphans, inProgress [
 		if e.IsDir() || !strings.HasPrefix(e.Name(), "sha256-") {
 			continue
 		}
-		// **未下完的下载不是孤儿**，单独归类（见 isInProgressBlob）
-		if IsInProgressBlob(e.Name()) {
+		// **未下完的下载不是孤儿**，单独归类（判据见 ollamablob 包）
+		if ollamablob.IsInProgress(e.Name()) {
 			if info, err := os.Stat(filepath.Join(dir, e.Name())); err == nil {
 				inProgress = append(inProgress, Item{
 					Source: SourceOllama,

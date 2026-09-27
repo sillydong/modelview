@@ -50,15 +50,18 @@ KNOWN_MISSING = {
 
 
 def parse_go_table(src: str) -> dict[int, str]:
-    """从 dtype.go 里取 GGML 码 → Dtype 字符串。
+    r"""从 dtype.go 里取 GGML 码 → Dtype 字符串。
 
     用 `Dtype\w+: {…GGMLCode: N}` 的形状取；Dtype 的值（字符串字面量）
     才是与 ggml 对照的东西，不是常量名 —— 常量名是 `DtypeQ2K`，
     而值是 `"Q2_K"`。
     """
-    out: dict[int, str] = {}
+    # 先收常量名 → Dtype 字面量，再收常量名 → 类型码。
+    # **不写成模块级的副作用**：那让 parse_go_table 的返回值依赖"之前调用过谁"。
+    names: dict[str, str] = {}
     for m in re.finditer(r'^\t(Dtype\w+)\s+Dtype = "([^"]+)"', src, re.M):
         names[m.group(1)] = m.group(2)
+    out: dict[int, str] = {}
     for m in re.finditer(r'^\t(Dtype\w+):\s*\{([^}]*)\}', src, re.M):
         body = m.group(2)
         c = re.search(r'GGMLCode:\s*(-?\d+)', body)
@@ -71,9 +74,6 @@ def parse_go_table(src: str) -> dict[int, str]:
     if not out:
         raise SystemExit("从 dtype.go 里没解析出任何类型码 —— 解析器要跟着改")
     return out
-
-
-names: dict[str, str] = {}
 
 
 def main() -> int:
@@ -89,6 +89,18 @@ def main() -> int:
             bad += 1
         elif up != name:
             print(f"✗ {code}: 我们叫 {name}，上游叫 {up}", file=sys.stderr)
+            bad += 1
+
+    # KNOWN_MISSING 里的名字也要与上游比对 —— 这个 dict 是手写的，
+    # 写错名字的话报告会照抄错的，而 rc 仍是 0（实测过：
+    # {34: ("这不是TQ1_0", "乱写的")} 照样通过）。
+    for code, (nm, _why) in sorted(KNOWN_MISSING.items()):
+        up = upstream.get(code)
+        if up is None:
+            print(f"✗ KNOWN_MISSING 里的 {code} 在上游不存在", file=sys.stderr)
+            bad += 1
+        elif up != nm:
+            print(f"✗ KNOWN_MISSING[{code}] 写的是 {nm}，上游叫 {up}", file=sys.stderr)
             bad += 1
 
     missing = sorted(set(upstream) - set(ours))

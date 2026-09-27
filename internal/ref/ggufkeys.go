@@ -90,13 +90,21 @@ var keySuffixes = []keyEntry{
 	{"attention.head_count_swa", "滑动窗口层的头数", "对使用滑动窗口的那几层生效的头数", "正整数"},
 	{"rope.freq_base", "RoPE 的基频", "旋转位置编码的基频。默认 10000，长上下文模型常调到几十万", "浮点"},
 	{"rope.freq_base_swa", "滑动窗口层的 RoPE 基频", "对使用滑动窗口的那几层生效的基频", "浮点"},
-	// ── 长上下文用的 RoPE 缩放（本机 gpt-oss:20b 全是这一组，type=yarn）──
+	// ── 长上下文用的 RoPE 缩放 ──
 	//
 	// 取值名照 gguf 包的 RopeScalingType：none / linear / yarn / longrope。
-	// 这五条来自两份真实文件（ollama 的 gptoss 版与 ggml-org 的官方版），
-	// 后者多出 type / yarn_beta_fast / yarn_beta_slow 三条。
+	//
+	// **来源要分清，两份真实文件不是同一组键**（实测）：
+	//   - 本机 ollama 的 gpt-oss:20b（gptoss 前缀）：只有 factor 与
+	//     original_context_length —— **没有 type**，也没有 yarn_beta_*
+	//   - ggml-org 的官方 gpt-oss GGUF（gpt-oss 前缀）：另有 type=yarn
+	//     与 yarn_beta_fast / yarn_beta_slow
+	// 所以下面这五条里，只有前两条被本机语料验证过；
+	// 后三条只被那份官方文件（不在本机）验证过。
 	{"rope.scaling.type", "RoPE 缩放方式", "none=不缩放、linear=线性插值、" +
-		"yarn=YaRN（按频率分段插值，长上下文最常用）、longrope=LongRoPE",
+		"yarn=YaRN（按频率分段插值，长上下文最常用）、longrope=LongRoPE。" +
+		"**这个键可能整条缺失**（本机 ollama 的 gpt-oss:20b 就没有）—— " +
+		"缺了不代表没缩放，别从 factor 反推类型",
 		"none / linear / yarn / longrope"},
 	{"rope.scaling.factor", "RoPE 缩放倍数", "上下文被拉长的倍数。" +
 		"与 rope.scaling.original_context_length 一起读：训练时 4096、推理拉到 131072 就是 32 倍", "浮点（如 32）"},
@@ -277,10 +285,15 @@ func lookupKey(key string) (keyEntry, bool, bool) {
 // **原先完全不列，理由变了**：那时候的判断是"列出来会让用户以为
 // 那些档还在产出"。但实测 ollama 的 gpt-oss:20b 里 general.file_type
 // 写的就是 **4**（一个真实、流行的模型），而 FileTypeByCode(4) 当时
-// 返回"查不到"，界面上什么都不显示 —— 用户对着一个真实的值得不到任何解释。
+// 返回"查不到" —— 消费方拿到的是一个空条目，对着一个真实的值得不到任何解释。
 //
 // 现在的做法：照列，但把上游的移除原因写在 note 里，
 // 读起来是"这个编号已废弃"而不是"这是一种现役量化档"。
+//
+// **注意目前还没有任何非测试代码调 FileTypeByCode**（`internal/ref` 的
+// 第一个真实消费者是计划 ④b 的 TUI）。所以"用户现在能看到解释了"
+// 这件事目前只能被测试证明，还不能被观察验证 —— 上面说的是
+// "为展示层准备好了"，不是"已经修好了用户看得到"。
 var fileTypeValues = []struct {
 	code    uint32
 	enum    string

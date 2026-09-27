@@ -23,18 +23,23 @@ Go 侧的 `TestBlockTable_与真实文件吻合` 做的是同一件事，但那�
 
 ## 覆盖边界
 
-本脚本只能验证**给定文件里实际出现的类型**。本机四个 ollama 模型覆盖
-F32/F16/BF16/Q4_K/Q5_0/Q6_K/Q8_0 共 7 项。其余 13 项
-（Q4_0/Q4_1/Q5_1/Q8_1/Q2_K/Q3_K/Q5_K/Q8_K/I8/I16/I32/I64/F64）
+本脚本只能验证**给定文件里实际出现的类型**。本机五个 ollama 模型覆盖
+F32/F16/BF16/Q4_K/Q5_0/Q6_K/Q8_0/MXFP4 共 8 项。其余 13 项
+（Q4_0/Q4_1/Q5_1/Q8_1/Q2_K/Q3_K/Q5_K/Q8_K/I8/I16/I32/I64/F64，以及 NVFP4）
 没有任何本地文件覆盖，只能靠 Go 侧 `TestTensorByteSize_覆盖全部类型码`
 逐值钉住 —— 那张表的期望值来自 llama.cpp 的结构体定义，属于独立来源，
 但如果那里也抄错了，两边一致地错是拦不住的。
+
+**遇到未收录的类型码时本脚本判失败并说明"校验不完整"**，不跳过 ——
+跳过会让那一段字节不算进跨度，凭空造出"张量间空隙"，把
+"我表里缺一项"说成"文件有问题"。
 """
 
 from __future__ import annotations
 
 import glob
 import os
+import re
 import struct
 import sys
 
@@ -50,10 +55,12 @@ BLOCK_BYTES = {
     0: 4, 1: 2, 2: 18, 3: 20, 6: 22, 7: 24, 8: 34, 9: 36,
     10: 84, 11: 110, 12: 144, 13: 176, 14: 210, 15: 292,
     24: 1, 25: 2, 26: 4, 27: 8, 28: 8, 30: 2,
+    39: 17, 40: 36,   # MXFP4 / NVFP4
 }
 BLOCK_ELEMS = {
     2: 32, 3: 32, 6: 32, 7: 32, 8: 32, 9: 32,
     10: 256, 11: 256, 12: 256, 13: 256, 14: 256, 15: 256,
+    39: 32, 40: 64,   # MXFP4 / NVFP4
 }
 
 TYPE_NAME = {
@@ -62,7 +69,7 @@ TYPE_NAME = {
     14: "Q6_K", 15: "Q8_K", 16: "IQ2_XXS", 17: "IQ2_XS", 18: "IQ3_XXS",
     19: "IQ1_S", 20: "IQ4_NL", 21: "IQ3_S", 22: "IQ2_S", 23: "IQ4_XS",
     24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64", 29: "IQ1_M",
-    30: "BF16",
+    30: "BF16", 39: "MXFP4", 40: "NVFP4",
 }
 
 MAX_STRING = 64 << 20
@@ -168,6 +175,17 @@ def analyze(path: str) -> tuple[bool, str]:
         start = data_start + offset
         spans.append((start, start + size, TYPE_NAME.get(ttype, str(ttype))))
 
+    # 未收录的类型**必须让整次校验作废**，不能跳过它继续查空隙：
+    # 跳过意味着那一段字节没被算进 spans，于是"空隙"必然出现 ——
+    # 实测 MXFP4 没收录时，脚本在唯一含它的文件上报
+    # "张量间空隙 141004800 字节"，把"我表里缺一项"说成了"文件有问题"。
+    # 一个永远红、且指向错误原因的脚本，结果是没人再跑它。
+    if unknown:
+        names = sorted(unknown)
+        return False, (f"**本次校验不完整**：文件里有未收录的类型码 {names}，"
+                       f"它们的字节数无法计算，张量跨度检查已放弃。\n"
+                       f"    先把这些类型补进 BLOCK_BYTES/BLOCK_ELEMS/TYPE_NAME 再跑。")
+
     # 关键不变式：按偏移排序后，相邻张量**不得重叠**.
     #
     # 不能只检查「最大的 offset+size 是否等于文件大小」——
@@ -196,6 +214,18 @@ def analyze(path: str) -> tuple[bool, str]:
     return ok, f"{note}\n    覆盖类型: {', '.join(covered)}"
 
 
+# 与 Go 侧 internal/ollamablob 同一判据。
+#
+# Python 不能 import Go，所以这份是**镜像**，判据要改就两处一起改。
+# 用精确形状而不是 `"-partial" in name`：宽判据会把 `sha256-abc-partial`
+# 这种短名字也当成下载中，于是正常 blob 被永远排除在外（静默漏报）。
+_PARTIAL_RE = re.compile(r"^sha256-[0-9a-f]{64}-partial")
+
+
+def is_in_progress(name: str) -> bool:
+    """这个 blob 文件名是不是还没下完（ollama 下到一半的中间状态）。"""
+    return _PARTIAL_RE.match(name) is not None
+
 def find_blobs() -> list[str]:
     home = os.path.expanduser("~")
     d = os.path.join(home, ".ollama", "models", "blobs")
@@ -204,7 +234,7 @@ def find_blobs() -> list[str]:
     out = []
     for p in sorted(glob.glob(os.path.join(d, "sha256-*"))):
         # 跳过没下完的（<digest>-partial）：读到一半的文件会给出错的结论
-        if "-partial" in os.path.basename(p):
+        if is_in_progress(os.path.basename(p)):
             continue
         if os.path.getsize(p) < 1 << 20:
             continue

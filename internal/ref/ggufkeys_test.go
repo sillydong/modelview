@@ -3,7 +3,6 @@ package ref
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -66,22 +65,12 @@ func TestGGUFKeys_file_type取值(t *testing.T) {
 			t.Errorf("没有 file_type 取值 %s 的条目", code)
 		}
 	}
-	// 上游已废弃的编号**要列**，但必须标明已废弃。
-	//
-	// 这条断言的方向改过：原先要求"不该列出来"（理由是列了会让用户
-	// 以为那些档还在产出）。但实测 ollama 的 gpt-oss:20b 里
-	// general.file_type 写的就是 4 —— 真实文件里会出现这些编号，
-	// 不列的话用户对着一个值得不到任何解释。改成"列，但标明已废弃"。
-	for _, code := range []uint32{4, 5, 6, 33, 34, 35} {
-		e, ok := ByID("filetype:" + strconv.FormatUint(uint64(code), 10))
-		if !ok {
-			t.Errorf("档位 %d 没列出来 —— 真实文件里会出现它（实测 gpt-oss:20b 写的就是 4）", code)
-			continue
-		}
-		if !strings.Contains(e.Title, "已废弃") {
-			t.Errorf("档位 %d 没标明已废弃，用户会以为它是现役档: %q", code, e.Title)
-		}
-	}
+	// 已废弃的编号在这里**不再单独断言** —— 它们由
+	// TestFileType_废弃编号查得到 覆盖（走 FileTypeByCode，是这里
+	// 这个 ByID 版本的超集：多了上游原名、现役档的反面对照、以及
+	// 带 GUESSED 标志位的 1028）。同一个决定留两份守卫的话，
+	// 将来改废弃清单要在两处改，漏一处会以"两条测试都红了"的形式出现，
+	// 容易被当成两个问题。
 }
 
 // file_type 的档位名要与实际张量类型分布自洽。
@@ -215,7 +204,7 @@ func TestTensorNaming_每段都有释义(t *testing.T) {
 		}
 	}
 	if len(tensorSegments) != 87 {
-		t.Fatalf("张量段 %d 条，预期 86 条 —— 增删时同步改这里", len(tensorSegments))
+		t.Fatalf("张量段 %d 条，预期 %d 条 —— 增删时同步改这里", len(tensorSegments), 87)
 	}
 }
 

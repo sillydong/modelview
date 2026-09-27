@@ -36,8 +36,9 @@ var segmentsNotInCorpus = map[string]bool{
 
 // tensorSegments 是张量名各段的释义。
 //
-// 段名来自本机真实模型（qwen2.5 / gemma4 / nomic-bert 与项目 artifacts）
-// 的张量名并集：tools/extract_tensor_segments.py 生成 testdata/real_segments.txt，
+// 段名来自本机 5 个真实模型（gpt-oss:20b / qwen2.5:3b / gemma4:e4b /
+// gemma4:26b / nomic-embed-text 与项目 artifacts）的张量名并集：
+// tools/extract_tensor_segments.py 生成 testdata/real_segments.txt，
 // TestTensorNaming_覆盖真实张量名 拿它校验覆盖率。
 var tensorSegments = []tensorSegment{
 	{"blk", "Transformer 块前缀", "后面跟层号，如 blk.7 表示第 7 层（从 0 数）", ""},

@@ -29,14 +29,27 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import struct
 import sys
 
 # **跳过没下完的**（<digest>-partial 及其分片）：拿半个文件当语料，
 # 生成出来的清单是假的，而它会被当成真值入库。
+# 与 Go 侧 internal/ollamablob 同一判据。
+#
+# Python 不能 import Go，所以这份是**镜像**，判据要改就两处一起改。
+# 用精确形状而不是 `"-partial" in name`：宽判据会把 `sha256-abc-partial`
+# 这种短名字也当成下载中，于是正常 blob 被永远排除在外（静默漏报）。
+_PARTIAL_RE = re.compile(r"^sha256-[0-9a-f]{64}-partial")
+
+
+def is_in_progress(name: str) -> bool:
+    """这个 blob 文件名是不是还没下完（ollama 下到一半的中间状态）。"""
+    return _PARTIAL_RE.match(name) is not None
+
 BLOBS = [p for p in sorted(glob.glob(
     os.path.expanduser("~/.ollama/models/blobs/sha256-*")))
-    if "-partial" not in os.path.basename(p)]
+    if not is_in_progress(os.path.basename(p))]
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "..", "internal", "ref", "testdata", "real_segments.txt")
 

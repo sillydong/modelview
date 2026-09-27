@@ -56,8 +56,9 @@ def fetch(url: str) -> str:
 def parse_enum(header: str) -> dict[str, int]:
     """从 llama.h 里取出 enum llama_ftype 的 名称 → 编号。
 
-    **只有没被注释掉的行才算数**：4/5/6 与 33/34/35 是保留编号，
-    上游把它们注掉了 —— 那正是我们表里也不列它们的理由。
+    **只有没被注释掉的行才算数**：4/5/6 与 33/34/35 是上游注掉的保留编号。
+    它们由 parse_deprecated 单独解析 —— 我们表里**照列但标明已废弃**
+    （真实文件里会出现这些编号：实测 ollama 的 gpt-oss:20b 写的就是 4）。
     """
     m = re.search(r"enum llama_ftype\s*\{(.*?)\n\s*\};", header, re.S)
     if not m:
@@ -72,6 +73,53 @@ def parse_enum(header: str) -> dict[str, int]:
             out[mm.group(1)] = int(mm.group(2))
     if not out:
         raise SystemExit("enum llama_ftype 解析出 0 项 —— 解析器要跟着上游改")
+    return out
+
+
+def parse_deprecated(header: str) -> dict[int, str]:
+    """从 llama.h 里取出**被注释掉**的废弃档：编号 → 枚举名。
+
+    与 parse_enum 相反：这里要的正是那些 `//` 开头的行。
+    每行的形状是 `// LLAMA_FTYPE_MOSTLY_Q4_2 = 5,  // support has been removed`。
+    """
+    out: dict[int, str] = {}
+    for line in header.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("//"):
+            continue
+        m = re.match(r"//\s*LLAMA_FTYPE_(\w+)\s*=\s*(\d+)\s*,", stripped)
+        if m:
+            out[int(m.group(2))] = m.group(1)
+    return out
+
+
+def parse_go_deprecated(src: str) -> dict[int, str]:
+    """从 ggufkeys.go 的 deprecatedFileTypes 里取 编号 → 枚举名。
+
+    与 parse_go_table 分开：那是现役档（fileTypeValues），
+    这是废弃档，两者在 Go 里就是两张表。
+    """
+    i = src.find("var deprecatedFileTypes")
+    if i < 0:
+        raise SystemExit("在 ggufkeys.go 里找不到 deprecatedFileTypes")
+    j = src.find("}{", i)
+    if j < 0:
+        raise SystemExit("deprecatedFileTypes 的声明形状变了（找不到 `}{`）")
+    j += 1
+    depth, k = 0, j
+    while k < len(src):
+        if src[k] == "{":
+            depth += 1
+        elif src[k] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        k += 1
+    out: dict[int, str] = {}
+    for mm in re.finditer(r'\{(\d+),\s*"([^"]*)"', src[j:k]):
+        out[int(mm.group(1))] = mm.group(2)
+    if not out:
+        raise SystemExit("deprecatedFileTypes 解析出 0 项 —— 解析器要跟着 Go 代码改")
     return out
 
 
@@ -136,7 +184,8 @@ def main() -> int:
     cpp = fetch(SOURCES["llama-model-loader.cpp"])
     enums = parse_enum(header)
     displays = parse_display_names(cpp)
-    ours = parse_go_table(open(TABLE_GO, encoding="utf-8").read())
+    go_src = open(TABLE_GO, encoding="utf-8").read()
+    ours = parse_go_table(go_src)
 
     # 上游把 LLAMA_FTYPE_ 前缀去掉后就是我们的枚举名
     upstream = {code: name for name, code in enums.items()}
@@ -178,6 +227,32 @@ def main() -> int:
     if upstream.get(1024) != "GUESSED":
         print(f"✗ 上游 1024 号不再是 GUESSED，而是 {upstream.get(1024)!r}", file=sys.stderr)
         bad += 1
+
+    # 废弃档：与上游被注释掉的那几行双向比对。
+    #
+    # 这 6 条曾经完全没有对照 —— 唯一的守卫是同一次提交里手抄的测试，
+    # 两边一起错就没人管；而注释里写着"复核用这个脚本"，
+    # 跑一遍还会得到"✓ 一致"，误以为复核过了。
+    up_dep = parse_deprecated(header)
+    our_dep = parse_go_deprecated(go_src)
+    for code, enum in sorted(our_dep.items()):
+        if code not in up_dep:
+            print(f"✗ 废弃档 {code}（我们叫 {enum}）在上游的注释里找不到",
+                  file=sys.stderr)
+            bad += 1
+        elif up_dep[code] != enum:
+            print(f"✗ 废弃档 {code}：我们叫 {enum}，上游注释里是 {up_dep[code]}",
+                  file=sys.stderr)
+            bad += 1
+    for code, enum in sorted(up_dep.items()):
+        if code not in our_dep:
+            # **只提示，不判失败**：漏列一条废弃档由 Go 侧
+            # TestFileType_废弃编号查得到 拦（它写死了那 6 个编号）。
+            # 这里判失败的话，就成了"同一件事两处判"，
+            # 而其中一处（这里）要联网才能跑。
+            print(f"· 上游注释掉的 {code} {enum} 我们没列"
+                  f"（漏列由 Go 侧 TestFileType_废弃编号查得到 拦）")
+    print(f"  废弃档：我们 {len(our_dep)} 项，上游注释里 {len(up_dep)} 项")
 
     if bad:
         print(f"\n{bad} 处不一致（我们 {len(ours)} 项，上游 {len(upstream)} 项）",

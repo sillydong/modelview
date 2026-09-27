@@ -112,8 +112,13 @@ var dtypeTable = map[Dtype]dtypeProps{
 	// MXFP4 / NVFP4：块结构来自 ggml 的 type_size / type_blck_size
 	// （经 gguf 包的 GGML_QUANT_SIZES 核对）。
 	//
-	// 位宽由块字节数推导（同下面那批）：17×8/32 = 4.25、36×8/64 = 4.5，
-	// 由 TestBlockBytes_量化位宽自洽 钉住。
+	// 位宽由块字节数推导（同下面那批）：17×8/32 = 4.25、36×8/64 = 4.5。
+	//
+	// **TestBlockBytes_量化位宽自洽 只保证"比例自洽"，不保证数值对**：
+	// (64, 34) 同样满足 bits == bytes×8/elems，那条测试照样绿。
+	// 真正钉住 32/17 的是 parser/gguf 的 TestTensorByteSize_覆盖全部类型码
+	// （独立抄录的期望值）与 TestBlockTable_与真实文件吻合（真实 gpt-oss:20b
+	// 的张量跨度）。
 	//
 	// **只收了块结构，没有解码器**：analyze 对它们会明确报"解码未实现"，
 	// 不会给出可能错误的数值统计。

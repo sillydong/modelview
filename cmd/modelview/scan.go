@@ -34,6 +34,18 @@ func runScan(ctx context.Context, asJSON bool) error {
 		return nil
 	}
 
+	// **未完成的下载要在"没有模型"的早退之前说**。
+	//
+	// ollama 是下完之后才写 manifest 的（实测：manifest 的时间戳比 blob 晚几秒），
+	// 所以"第一次 pull 下到一半"这个最常见的情形里 Items 正好是空的 ——
+	// 早退在前的话，12.85 GiB 占着盘而输出一个字都不提，
+	// 而这恰恰是这条提示要保护的那个场景。
+	if n := len(res.InProgress); n > 0 {
+		fmt.Printf("另有 %d 个未完成的下载（合计 %s），不算可回收：\n"+
+			"  那是 ollama 正在下载或上次中断留下的，删掉会毁掉下载\n",
+			n, humanBytes(totalSize(res.InProgress)))
+	}
+
 	if len(res.Items) == 0 {
 		fmt.Println("没有发现模型文件。")
 		fmt.Println("扫过这些目录（不存在的会被跳过）：")
@@ -71,14 +83,6 @@ func runScan(ctx context.Context, asJSON bool) error {
 		}
 		discover.Fill(&res.Items[i])
 		fmt.Println(scanLine(res.Items[i]))
-	}
-
-	// 未完成的下载单独说一句：它占着盘但不是"可回收"，
-	// 删了会毁掉用户自己的下载
-	if n := len(res.InProgress); n > 0 {
-		fmt.Printf("\n另有 %d 个未完成的下载（合计 %s），**不算可回收**：\n"+
-			"  那是 ollama 正在下载或上次中断留下的，删掉会毁掉下载\n",
-			n, humanBytes(totalSize(res.InProgress)))
 	}
 
 	// 孤儿 blob 单独一段：它不属于任何模型，

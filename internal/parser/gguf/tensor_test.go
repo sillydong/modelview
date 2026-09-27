@@ -9,9 +9,8 @@ import (
 	"slices"
 	"testing"
 
-	"strings"
-
 	"github.com/sillydong/modelview/internal/model"
+	"github.com/sillydong/modelview/internal/ollamablob"
 	"github.com/sillydong/modelview/internal/testutil"
 )
 
@@ -327,6 +326,13 @@ func TestBlockTable_与真实文件吻合(t *testing.T) {
 		"sha256-970aa74c0a90ef7", // nomic-embed    F32/F16
 		"sha256-4c27e0f5b5adf02", // gemma4:e4b     + BF16
 		"sha256-7121486771cbfe2", // gemma4:26b     + Q5_0/Q8_0
+		// **gpt-oss:20b 是唯一含 MXFP4 的真实文件**（459 个张量里 72 个是它）。
+		//
+		// 加这条之前，MXFP4 的块结构（32 个权重 17 字节）**没有任何独立来源**：
+		// 它只出现在 dtype.go 的条目与 tensor_test 的期望表里，两处都是手抄的。
+		// 实测过：把 17 改成 18、连下面的期望值一起改，整套测试全绿
+		//（包括 analyze/decode/ref）—— 而真实文件里那张量会立刻重叠。
+		"sha256-e7b273f9636059a6", // gpt-oss:20b    + MXFP4
 	}
 
 	// 语料整个不在（换台机器）时跳过；语料在、清单里某个文件却不在时判失败。
@@ -436,11 +442,12 @@ func findBlob(prefix string) string {
 	for _, e := range entries {
 		if len(e.Name()) >= len(prefix) && e.Name()[:len(prefix)] == prefix {
 			// 跳过没下完的 —— 前缀匹配**会命中** <digest>-partial，
-			// 拿它当语料测出来的结论是假的
+			// 拿它当语料测出来的结论是假的。
 			//
-			// 判据与 discover.IsInProgressBlob 相同，但这里不能 import 它：
-			// discover → parser → parser/gguf 会成环。改一边记得改另一边
-			if strings.Contains(e.Name(), "-partial") {
+			// 判据来自 ollamablob 包（叶子包，不会成环）。
+			// 这里原先抄了一份更宽的 `Contains(name, "-partial")`，
+			// 注释却写着"判据相同" —— 其实不同。
+			if ollamablob.IsInProgress(e.Name()) {
 				continue
 			}
 			return filepath.Join(dir, e.Name())
