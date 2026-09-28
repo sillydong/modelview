@@ -168,8 +168,8 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-// Float 用 4 位有效数字：权重的动态范围横跨好几个数量级，
-// 定点格式会让小值全变成 0.0000。
+// Float 在常用区间内用 4 位小数（区间外退回 4 位有效数字）：
+// 权重的动态范围横跨好几个数量级，定点格式会让小值全变成 0.0000。
 func TestFloat(t *testing.T) {
 	tests := []struct {
 		in   float64

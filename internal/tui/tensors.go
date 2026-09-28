@@ -106,6 +106,15 @@ func (v TensorsView) Update(msg tea.Msg) (View, tea.Cmd) {
 			// 未过滤时 Esc 会走根视图那条"弹栈"，永远到不了这里 ——
 			// 写了也是死代码（这一版修的就是同类死角，见 Task 2）。
 			// 清字的入口是 backspace，不是 Esc。
+		case "enter":
+			// `shown()` 返回的是**过滤后的下标**，所以 idx[cursor]
+			// 正是屏幕上选中的那一个 —— 这也正是 shown() 存下标
+			// 而不是存张量副本的理由。
+			idx := v.shown()
+			if len(idx) > 0 {
+				tn := v.m.Tensors[idx[v.cursor]]
+				return v, pushCmd(NewTensorView(v.m, tn))
+			}
 		}
 	}
 	return v, nil
@@ -161,9 +170,10 @@ func (v TensorsView) Help() []string {
 	}
 	return []string{
 		keyUp + " " + keyDown + " 移动",
-		// **暂时不列 "Enter 详情"**：详情页在 Task 5 才接线，
-		// 现在按了没反应 —— 而 keys.go 定下的规矩是"只列当前视图
-		// 真的支持的键"，列了不支持的等于骗用户按。
+		// **接上了就必须列**：keys.go 那条"只列当前视图真的支持的键"
+		// 是两个方向 —— 不支持的不能列（骗用户按），支持的不能漏
+		//（用户不知道有这条路）。详情页在这里接的线。
+		keyEnter + " 详情",
 		keyFilter + " 过滤",
 		keyEsc + " 返回",
 		keyQuit + " 退出",

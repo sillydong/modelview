@@ -271,3 +271,23 @@ func TestTensorsView_已确认过滤态退格(t *testing.T) {
 		t.Error("已确认态退格不该把视图切回输入态")
 	}
 }
+
+// Enter 推入张量详情（走 pushMsg），且带的是**当前选中**的那个张量。
+func TestTensorsView_Enter进入详情(t *testing.T) {
+	v := newTensors(fakeModelWithTensors(10))
+	for range 3 {
+		v2, _ := v.Update(key("down"))
+		v = v2.(TensorsView)
+	}
+	_, cmd := v.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("按 Enter 没有返回命令")
+	}
+	msg, ok := cmd().(pushMsg)
+	if !ok {
+		t.Fatalf("返回的不是 pushMsg: %T", cmd())
+	}
+	if msg.v == nil {
+		t.Error("pushMsg 里的视图是 nil")
+	}
+}
