@@ -84,7 +84,7 @@ func Analyze(ctx context.Context, m *model.Model, opts Options) (map[string]erro
 			// 取消不是"某个张量失败"，要单独报出来让调用方知道是主动中断
 			return errs, err
 		}
-		if !needsWork(tn) {
+		if !NeedsWork(tn) {
 			continue // 本次输出需要的东西都在（来自缓存或调用方预填）
 		}
 		if err := analyzeOne(src, tn, limit); err != nil {
@@ -97,13 +97,16 @@ func Analyze(ctx context.Context, m *model.Model, opts Options) (map[string]erro
 	return errs, nil
 }
 
-// needsWork 判断这个张量还有没有要算的。
+// NeedsWork 判断这个张量还有没有要算的。
+//
+// 导出是给界面用的：详情页要按同一个判据决定"要不要显示扫描中" ——
+// 两边各写一份的话，对"什么时候该重扫"的理解迟早漂移。
 //
 // **不能只看 Stats != nil**：那会把「统计算过了」当成「分析做完了」。
 // 量化分析是后加的，旧缓存里没有 —— 用 Stats 当判据时同一个文件
 // 第二次跑会整块跳过量化分析，输出与第一次不同且不报错。
 // 实测：冷跑 181 个模拟 / 253 个诊断，热跑 0 / 0。
-func needsWork(tn *model.Tensor) bool {
+func NeedsWork(tn *model.Tensor) bool {
 	if tn.Stats == nil {
 		return true
 	}
