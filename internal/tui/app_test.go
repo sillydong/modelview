@@ -34,6 +34,13 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "tab":
+		// **必须显式映射**：不映射的话会落到 default 分支，造出一个
+		// Type=KeyRunes、内容是字面量 "tab" 的按键。它对 `msg.String()`
+		// 恰好等价于真的 Tab（key.go 的 keyNames 里 keyHT 就是 "tab"），
+		// 所以测试一直绿着 —— 但"按了 Tab"与"粘贴了 t/a/b 三个字符"
+		// 是两回事，靠巧合一致的东西会在实现改判 `msg.Type` 时静默失效。
+		return tea.KeyMsg{Type: tea.KeyTab}
 	case "ctrl+c":
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "backspace":
