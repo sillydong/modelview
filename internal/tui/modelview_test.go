@@ -502,3 +502,36 @@ func TestModelView_进速查表时把模型带过去(t *testing.T) {
 		t.Errorf("带过去的不是当前这个模型：%p, want %p", rv.m, v.m)
 	}
 }
+
+// **含换行的值必须被压成一行**：一条元数据撑成几十行的话，这一栏的
+// 行数核账（listCap / window / "显示第 N–M 条"）全乱 —— 实测 qwen2.5 的
+// tokenizer.chat_template 有几十个换行，80×24 下屏幕上出现的是根视图
+// padTo 那句"…还有 54 行没显示"，范围提示整句被顶掉。
+//
+// **不能静默丢内容**：所以断言的是"换行被换成了看得见的记号"，
+// 而不是"某一行里没有换行"（后者把值砍到第一行也能过）。
+func TestModelView_含换行的值只占一行(t *testing.T) {
+	// 三个换行的最小形态：那个条目只占一行
+	three := fakeModel()
+	three.Metadata = append(three.Metadata, model.MetaKV{
+		Key: "tokenizer.chat_template", Value: "第一行\n第二行\n第三行\n第四行"})
+	out := gotoSection(loadModelView(three), sectionMetadata).View(120, 24)
+	if !strings.Contains(out, "第一行␊第二行␊第三行␊第四行") {
+		t.Errorf("值里的换行没换成可见记号 —— 要么被静默丢掉，"+
+			"要么把一条撑成了四行:\n%s", out)
+	}
+
+	// 几十个换行（真实 chat_template 的形态）：这一栏自己算好的行数
+	// 不能被撑爆 —— 撑爆时 padTo 会把它那句范围提示换成"…还有 N 行没显示"
+	many := fakeModel()
+	many.Metadata = append(many.Metadata, model.MetaKV{
+		Key: "tokenizer.chat_template", Value: strings.Repeat("行\n", 30) + "尾"})
+	out = gotoSection(loadModelView(many), sectionMetadata).View(120, 24)
+	if !strings.Contains(out, strings.Repeat("行␊", 30)+"尾") {
+		t.Errorf("几十个换行没有被压成一行:\n%s", out)
+	}
+	if n := len(strings.Split(out, "\n")); n > 24 {
+		t.Errorf("渲染出 %d 行，超出 24 行的高度 —— "+
+			"padTo 会把这一栏自己的提示顶掉", n)
+	}
+}

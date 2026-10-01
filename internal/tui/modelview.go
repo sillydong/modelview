@@ -112,7 +112,12 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 	case selectMetaMsg:
 		// **越界就整个丢弃**：从速查表跳回来时，模型理论上没变，
 		// 但"理论上"不是保证 —— 越界索引会在下一帧 panic
-		if msg.index < 0 || msg.index >= len(v.m.Metadata) {
+		//
+		// `v.m == nil` 那一半是**防御性的、不可达**（selectMetaMsg 只能由
+		// 一个加载好的 ModelView 推出来的 EntryView 发出），但 View() 里
+		// 早就有 `if v.m == nil` 的分支 —— "m 为 nil"在本仓是被承认
+		// 可表示的状态，而一次 nil 解引用 panic 的代价远大于一行判空。
+		if v.m == nil || msg.index < 0 || msg.index >= len(v.m.Metadata) {
 			return v, nil
 		}
 		v.cursor = int(sectionMetadata)
@@ -480,7 +485,7 @@ func (v ModelView) metadata(height int) string {
 //     而它们指向两个不同的条目 —— Enter 跳哪一个就没有答案
 func (v ModelView) metaLine(i int, kv model.MetaKV, focusHere bool) string {
 	var sb strings.Builder
-	sb.WriteString(styleField.Render(kv.Key) + "  " + kv.Value)
+	sb.WriteString(styleField.Render(kv.Key) + "  " + oneLine(kv.Value))
 
 	_, hasValueRef := fileTypeEntry(kv)
 	if e, ok := fileTypeEntry(kv); ok {
@@ -504,6 +509,24 @@ func (v ModelView) metaLine(i int, kv model.MetaKV, focusHere bool) string {
 		return styleSelected.Render(line)
 	}
 	return line
+}
+
+// oneLine 把值里的换行换成可见记号，让**一条元数据永远只占一行**。
+//
+// 含换行的值（qwen2.5 的 tokenizer.chat_template 那种）一次渲染出来是
+// 几十行，而这一栏的行数核账（listCap / window / "显示第 N–M 条"）
+// 全按"一条一行"算 —— 实测 80×24 下那句范围提示被整个顶掉，屏幕上换成
+// 根视图 padTo 的"…还有 54 行没显示"，用户既不知道自己在第几条，
+// 也不知道后面还有几条。
+//
+// **不能静默丢内容**：直接删掉换行的话值会变成一行连在一起的假文本。
+// ␊（U+240A，控制图片符）让"这里原本有换行"看得见，且只占一列宽
+// （East Asian Width 是 Neutral），不会把那一行撑歪。
+// \r 单独处理：CRLF 不先合成一个的话会显示成 ␍␊ 两个记号。
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\n", "␊")
+	return strings.ReplaceAll(s, "\r", "␍")
 }
 
 // fileTypeEntry 把 general.file_type 的值翻译成速查表条目。

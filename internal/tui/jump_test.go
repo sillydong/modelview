@@ -88,8 +88,12 @@ func jumpModel(t *testing.T) (m *model.Model, segA, segB string) {
 	segA, segB = segs[0], segs[1]
 
 	m = &model.Model{Path: "/x/m.gguf", Format: model.FormatGGUF, Version: "v3"}
+	// **两行都要有关联**：只有一行的话，"闭包捕获错行"（idx 恒为 0）
+	// 与正确的 i 在所有可达路径上结果相同 —— 实测那条变异会漏网。
+	// 第二行取一个真实存在的键后缀（速查表里查得到 keysuffix:block_count）。
 	m.Metadata = []model.MetaKV{
 		{Key: "general.file_type", Value: "15", Raw: uint32(15)},
+		{Key: "qwen2.block_count", Value: "36", Raw: uint32(36)},
 		{Key: "custom.unknown", Value: "x"},
 	}
 	// **名字里只用 segA/segB 两个段（外加 "weight"）**，不带 "blk"、"#N" 那些：
@@ -171,6 +175,13 @@ func TestJump_与正向判定一致(t *testing.T) {
 			t.Errorf("元数据第 %d 条 (%s) 指向 %s，但从那个条目跳不回来",
 				i, kv.Key, e.ID)
 		}
+		// **反方向：跳得回来 ⇒ 渲染时也挂了记号**。
+		// 少了这一半的话，metaLine 哪天换回自己的一套判定（不再走
+		// metaEntry）时，屏幕上会出现"没有记号却能跳"的行 ——
+		// 而正向那半照样是绿的。
+		if !strings.Contains(mv.metaLine(i, kv, false), "◂") {
+			t.Errorf("元数据第 %d 条 (%s) 能跳到 %s，但渲染时没有挂记号", i, kv.Key, e.ID)
+		}
 	}
 	// **一行都没走到时这条测试是空转的**：没有这一句的话，把 jumpModel
 	// 的 general.file_type 换成一个速查表里没有的键，循环零次、断言零次、
@@ -239,6 +250,63 @@ func TestJump_tensor段条目指向张量(t *testing.T) {
 	}
 	if got := len(tv.shown()); got != 1 {
 		t.Errorf("按 %s 筛出 %d 个张量, want 1", segB, got)
+	}
+}
+
+// **那句话里的数字，必须等于跳过去之后列表里的条数。**
+//
+// 遍历速查表的 tensors 表，而不是写死一个 `attn_q`：真正会分叉的是
+// `#N`（计数按段 → 有，子串筛 "#N" → 0 个）、`v` / `a` / `output`
+// 那些"某段是另一段的子串"的段 —— 而 `attn_q` 恰好是两边一致的那个，
+// 只验它等于没验这条性质。
+func TestJump_段条目数字与列表条数一致(t *testing.T) {
+	m, _, _ := jumpModel(t)
+
+	checked := 0
+	for _, tb := range ref.Tables() {
+		if tb.ID != "tensors" {
+			continue
+		}
+		for _, e := range tb.Entries {
+			// **只看"在本模型中"那一组**：SeeAlso 那几条也在这张表里，
+			// 它们的 label 是条目名、跳的是 EntryView，与这条测试无关
+			ts := targetsOf(t, m, e.ID)
+			occ := -1
+			for i, tg := range ts {
+				if tg.group == "在本模型中" {
+					occ = i
+					break
+				}
+			}
+			if occ < 0 {
+				continue // 本模型里没有这一段
+			}
+			tg := ts[occ]
+			checked++
+
+			msg, ok := tg.cmd().(pushMsg)
+			if !ok {
+				t.Fatalf("%s：发出的是 %T, want pushMsg", e.ID, tg.cmd())
+			}
+			tv, ok := msg.v.(TensorsView)
+			if !ok {
+				t.Fatalf("%s：推入的是 %T, want TensorsView", e.ID, msg.v)
+			}
+			// 数字从**那句话本身**里读，不从实现里抄一份 ——
+			// 抄一份的话两边一起错还能过
+			var n int
+			if _, err := fmt.Sscanf(tg.label, "%d 个张量的名字含", &n); err != nil {
+				t.Fatalf("%s：读不出那句话里的数字（%q）: %v", e.ID, tg.label, err)
+			}
+			if got := len(tv.shown()); got != n {
+				t.Errorf("%s：屏幕说「%s」，跳过去却是 %d 个 —— "+
+					"数数与筛不是同一个判据", e.ID, tg.label, got)
+			}
+		}
+	}
+	// 一个段都没命中时这条测试是空转的
+	if checked == 0 {
+		t.Fatal("这个模型里没有一个段命中 —— 这条测试什么都没验")
 	}
 }
 

@@ -371,3 +371,32 @@ func TestTensorsView_Enter进入详情(t *testing.T) {
 		t.Error("pushMsg 里的视图是 nil")
 	}
 }
+
+// 已确认过滤态的空结果提示**不能说"Esc 取消过滤"** —— 那时 Modal() 为假，
+// Esc 会被根视图拦成"弹掉整个列表"：屏幕上的那句话与按下去的结果相反。
+//
+// 所以这条不只断言那句话怎么写，还**顺着根视图真的走一遍那条键路** ——
+// 只断言"提示里出现了 Backspace"的话，把两句话都写上的实现照样绿。
+func TestTensorsView_空结果提示与按键行为一致(t *testing.T) {
+	m := fakeModelWithTensors(3)
+	v := NewTensorsViewName(m, "zzz没有这个")
+
+	out := v.View(100, 20)
+	if strings.Contains(out, "Esc 取消") {
+		t.Errorf("已确认过滤态下写「Esc 取消过滤」是假话 —— Esc 会弹掉整个列表:\n%s", out)
+	}
+	if !strings.Contains(out, keyBackspace) {
+		t.Errorf("空结果提示里没说怎么删字（该写 %s）:\n%s", keyBackspace, out)
+	}
+
+	// 那句"Esc 会弹掉整个列表"当场验一遍：同一个状态下，从根视图按 Esc
+	root2, _ := New(NewTensorsView(m)).Update(pushMsg{v: v})
+	if got := len(root2.(Model).stack); got != 2 {
+		t.Fatalf("栈深 %d, want 2 —— 测试前提不成立", got)
+	}
+	root3, _ := root2.Update(key("esc"))
+	if got := len(root3.(Model).stack); got != 1 {
+		t.Errorf("已确认过滤态下 Esc 没有弹栈（栈深 %d）—— "+
+			"那提示里写「Esc 会取消过滤」也没有任何东西会红", got)
+	}
+}

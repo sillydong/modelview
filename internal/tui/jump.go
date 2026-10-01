@@ -85,22 +85,38 @@ func dtypeOccurrences(m *model.Model, d model.Dtype) []entryTarget {
 	}}
 }
 
-// segmentOccurrences 找名字里含这一段（**按段匹配，不是子串**）的张量。
+// nameHasSegmentEntry 判断张量名里有没有哪一段对应 ref 条目 id。
 //
-// 按子串的话 "q" 会匹配到一大堆名字里恰好含 q 的张量；
+// **"段"这件事只有这一份判据**：segmentOccurrences 数数、TensorsView 按段筛
+// 都调它。各写一套的话两边会在 `#N` 这类段上分叉 —— 实测：条目页上写着
+// "432 个张量的名字含「#N」"，按下去却是"没有匹配 "#N" 的张量"（子串筛
+// "#N" 一个都命中不了）。合成一处之后，"屏幕上那句话里的数字"与
+// "跳过去列表里的条数"是同一个函数算出来的 —— 靠构造一致，不靠测试对齐。
+//
+// 按子串不行：`q` 会匹配到一大堆名字里恰好含 q 的张量。
 // 拆段之后每个段是一个完整的语义单元（blk / #N / attn_q / weight）。
 // 归一（#12 → #N）由 ref.LookupTensorSegment 负责 ——
 // **不在这里自己写**：那段归一逻辑曾经只存在于测试文件里，
 // 于是生产路径上永远查不到带层号的段（ref 包里的原话）。
+func nameHasSegmentEntry(name, id string) bool {
+	for _, s := range ref.SplitTensorName(name) {
+		if got, ok := ref.LookupTensorSegment(s); ok && got.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// segmentOccurrences 找名字里含这一段（**按段匹配，不是子串**）的张量。
+//
+// 判据走 nameHasSegmentEntry —— **与 TensorsView 的按段筛是同一个函数**：
+// 这里数出几个，跳过去就显示几个。
 func segmentOccurrences(m *model.Model, e ref.Entry) []entryTarget {
 	seg := e.ID[strings.Index(e.ID, ":")+1:]
 	var n int
 	for _, tn := range m.Tensors {
-		for _, s := range ref.SplitTensorName(tn.Name) {
-			if got, ok := ref.LookupTensorSegment(s); ok && got.ID == e.ID {
-				n++
-				break
-			}
+		if nameHasSegmentEntry(tn.Name, e.ID) {
+			n++
 		}
 	}
 	if n == 0 {
@@ -110,6 +126,6 @@ func segmentOccurrences(m *model.Model, e ref.Entry) []entryTarget {
 		group: "在本模型中",
 		label: fmt.Sprintf("%d 个张量的名字含「%s」", n, seg),
 		ok:    true,
-		cmd:   pushCmd(NewTensorsViewName(m, seg)),
+		cmd:   pushCmd(NewTensorsViewSegment(m, seg)),
 	}}
 }

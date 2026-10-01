@@ -29,6 +29,13 @@ type TensorsView struct {
 	// 是按类型筛，而用户在列表里还能再按名字筛一遍，
 	// 两个条件同时生效才符合直觉。
 	dtype model.Dtype
+
+	// seg 非空时只显示**名字拆段后含这一段**的张量。
+	//
+	// 与 filter **不是一回事**：那个是用户在列表里打的子串，
+	// 这个是条目页跳过来时说的"段"（判据见 nameHasSegmentEntry）。
+	// 与 dtype 一样只由构造函数给，用户改不了。
+	seg string
 }
 
 func NewTensorsView(m *model.Model) TensorsView {
@@ -49,6 +56,20 @@ func NewTensorsViewName(m *model.Model, keyword string) TensorsView {
 	return TensorsView{m: m, filter: keyword}
 }
 
+// NewTensorsViewSegment 造一个只显示「名字里含有这一段」的张量列表。
+//
+// **与 NewTensorsViewName 不是一回事**：那个按**子串**（`strings.Contains`），
+// 这个按**段**（`ref.SplitTensorName` + `ref.LookupTensorSegment`，与
+// `segmentOccurrences` 数数用的是同一个判据）。
+//
+// 为什么必须有它：段条目那一节屏幕上是"72 个张量的名字含「attn_q」"，
+// 按下去若走子串筛，两者在 `#N` 上会分叉成 **432 vs 0** ——
+// **屏幕印一句数，按下去得到另一份结果**。
+// 按段筛之后两边是同一个判据，**不可能不一致**（不是靠测试对齐，是靠构造）。
+func NewTensorsViewSegment(m *model.Model, seg string) TensorsView {
+	return TensorsView{m: m, seg: seg}
+}
+
 func (v TensorsView) Title() string {
 	switch {
 	case v.dtype != "" && v.filter != "":
@@ -57,6 +78,12 @@ func (v TensorsView) Title() string {
 	case v.dtype != "":
 		return fmt.Sprintf("张量 · %s · %s（%d 个）",
 			baseName(v.m.Path), v.dtype, len(v.shown()))
+	case v.seg != "" && v.filter != "":
+		return fmt.Sprintf("张量 · %s · 段 %s + %q（%d 个）",
+			baseName(v.m.Path), v.seg, v.filter, len(v.shown()))
+	case v.seg != "":
+		return fmt.Sprintf("张量 · %s · 段 %s（%d 个）",
+			baseName(v.m.Path), v.seg, len(v.shown()))
 	case v.filter != "":
 		return fmt.Sprintf("张量 · %s（过滤：%s）", baseName(v.m.Path), v.filter)
 	}
@@ -84,17 +111,25 @@ func (v TensorsView) Modal() bool { return v.filtering }
 // 统计之后列表里还是旧的那份（指针相同也没用 —— 列表要显示的是
 // "这个张量扫过没有"，那是会变的）。每次现算的代价是 O(n) 次字符串比较，
 // 434 个张量下可以忽略。
+//
+// 按段筛那一支要贵一档（每个张量每个段都要查一次速查表），
+// 但它只在真的按段筛时才走 —— 空字段那一次 `v.seg != ""` 就短路了，
+// 看全部这条最常走的路上不付这份钱。
 func (v TensorsView) shown() []int {
 	match := func(tn *model.Tensor) bool {
 		if v.dtype != "" && tn.Dtype != v.dtype {
 			return false
 		}
+		if v.seg != "" && !nameHasSegmentEntry(tn.Name, "tensor:"+v.seg) {
+			return false
+		}
 		return v.filter == "" || strings.Contains(strings.ToLower(tn.Name), strings.ToLower(v.filter))
 	}
-	// **快路径的条件是"两个都没筛"，`v.filter == ""` 单独一个不够**：
-	// 只判 filter 的话，按 dtype 筛会走这条捷径直接返回全部 ——
+	// **快路径的条件是"三个都没筛"，判据少一个就是静默失效**：
+	// 漏掉哪一维，那一维的筛就会走这条捷径直接返回全部 ——
 	// 列表显示全部，而用户以为自己筛过了。
-	if v.filter == "" && v.dtype == "" {
+	// 三个都要判，因为三个筛是**互相独立**的（见字段注释）。
+	if v.filter == "" && v.dtype == "" && v.seg == "" {
 		idx := make([]int, len(v.m.Tensors))
 		for i := range idx {
 			idx[i] = i
@@ -220,15 +255,30 @@ func (v TensorsView) View(width, height int) string {
 	idx := v.shown()
 	if len(idx) == 0 {
 		if v.filter != "" {
+			// **两个态的措辞必须分开**：还在输入时（filtering）Esc 走的是
+			// "取消过滤"那条分支；已确认之后 Modal() 为假，Esc 会被根视图
+			// 拦成"弹掉整个列表" —— 那时写"Esc 取消过滤"就是在说假话，
+			// 用户按下去整个列表不见了，而屏幕上说它会取消过滤。
+			// 与表头那句是同一条坑（updateFiltering 的注释里点过名），
+			// 表头早就分成两句了，这里原先漏了。
+			if v.filtering {
+				return styleHint.Render(fmt.Sprintf(
+					"没有匹配 %q 的张量（共 %d 个）。按 %s 取消过滤",
+					v.filter, len(v.m.Tensors), keyEsc))
+			}
 			return styleHint.Render(fmt.Sprintf(
-				"没有匹配 %q 的张量（共 %d 个）。按 %s 取消过滤",
-				v.filter, len(v.m.Tensors), keyEsc))
+				"没有匹配 %q 的张量（共 %d 个）。按 %s 删字，%s 返回",
+				v.filter, len(v.m.Tensors), keyBackspace, keyEsc))
 		}
-		// 按类型筛出来的空列表**不能说"这个模型没有张量"** ——
-		// 模型里有没有张量，与有没有这个类型的张量是两回事
+		// 按类型/按段筛出来的空列表**不能说"这个模型没有张量"** ——
+		// 模型里有没有张量，与有没有这一类的张量是两回事
 		if v.dtype != "" {
 			return styleHint.Render(fmt.Sprintf("没有 %s 类型的张量（共 %d 个）",
 				v.dtype, len(v.m.Tensors)))
+		}
+		if v.seg != "" {
+			return styleHint.Render(fmt.Sprintf("没有名字里含「%s」这一段的张量（共 %d 个）",
+				v.seg, len(v.m.Tensors)))
 		}
 		return styleHint.Render("这个模型没有张量")
 	}
@@ -254,6 +304,11 @@ func (v TensorsView) View(width, height int) string {
 			v.dtype, v.filter, len(idx), len(v.m.Tensors), keyBackspace, keyEsc)
 	case v.dtype != "":
 		head = fmt.Sprintf("类型 %s：%d/%d", v.dtype, len(idx), len(v.m.Tensors))
+	case v.seg != "" && v.filter != "":
+		head = fmt.Sprintf("段 %s · 过滤 %q：%d/%d（%s 删字，%s 返回）",
+			v.seg, v.filter, len(idx), len(v.m.Tensors), keyBackspace, keyEsc)
+	case v.seg != "":
+		head = fmt.Sprintf("段 %s：%d/%d", v.seg, len(idx), len(v.m.Tensors))
 	case v.filter != "":
 		head = fmt.Sprintf("过滤 %q：%d/%d（%s 删字，%s 返回）",
 			v.filter, len(idx), len(v.m.Tensors), keyBackspace, keyEsc)
