@@ -195,19 +195,39 @@ func (l Library) View(width, height int) string {
 		listCap = 1
 	}
 
-	start, end := window(len(l.items), l.cursor, listCap)
+	// **"共 N 个，显示第 X–Y 个"那一行要先从容量里扣出来**，
+	// 再算窗口（与 TensorsView / RefView 同一条修法）。
+	//
+	// 追加在容量之外的话，原始输出比高度多一行 —— 根视图的 padTo
+	// 于是砍掉**最后两行**（列表最后一行 + 这行提示）。光标停在末尾时，
+	// 被砍掉的正是用户选着的那一条：屏幕上看起来只是少了个模型，
+	// 用户按 Enter 打开的是一个自己没看见的条目（实测 30 个模型、
+	// 高 10/20/30 三档：最后一个模型在屏幕上就是不见）。
+	rows := listCap
+	if len(l.items) > rows && rows > 1 {
+		rows--
+	}
+	start, end := window(len(l.items), l.cursor, rows)
+
+	// **自己拼行、最后 Join，末尾不留换行** —— 这是 joinHorizontal 里
+	// 记过的那条：留了的话 padTo 按 "\n" 切会多出一个空元素，
+	// 多出来的那一行会把视图自己算好的提示挤掉，换成措辞更差的
+	// "…还有 N 行没显示"（而且数字还大一）。Library 是**启动后的第一屏**，
+	// 模型一多就撞上（HF 缓存那种几百个文件的场景）。
+	lines := make([]string, 0, end-start+2)
 	for i := start; i < end; i++ {
-		sb.WriteString(l.row(i, l.items[i]) + "\n")
+		lines = append(lines, l.row(i, l.items[i]))
 	}
 	if start > 0 || end < len(l.items) {
-		sb.WriteString(styleDim.Render(fmt.Sprintf(
-			"  …共 %d 个，显示第 %d–%d 个", len(l.items), start+1, end)) + "\n")
+		lines = append(lines, styleDim.Render(fmt.Sprintf(
+			"  …共 %d 个，显示第 %d–%d 个", len(l.items), start+1, end)))
 	}
 
 	if l.filled < len(l.items) {
-		sb.WriteString(styleHint.Render(fmt.Sprintf(
+		lines = append(lines, styleHint.Render(fmt.Sprintf(
 			"正在读取格式与参数量… %d/%d", l.filled, len(l.items))))
 	}
+	sb.WriteString(strings.Join(lines, "\n"))
 	return sb.String()
 }
 

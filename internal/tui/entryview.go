@@ -49,5 +49,8 @@ func (v EntryView) View(width, _ int) string {
 	if v.e.Notes != "" {
 		sb.WriteString("\n" + wrapText(v.e.Notes, width) + "\n")
 	}
-	return sb.String()
+	// **末尾不留换行**：padTo 按 "\n" 切行，多出来的空元素让它多算一行 ——
+	// "…还有 N 行没显示"里的 N 会比实际丢掉的多一（joinHorizontal 里
+	// 记过同一条）。Task 8 会把这一页补全，补的时候别把换行写回来。
+	return strings.TrimSuffix(sb.String(), "\n")
 }

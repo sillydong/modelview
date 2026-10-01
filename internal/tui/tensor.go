@@ -169,12 +169,17 @@ func (v TensorView) View(width, height int) string {
 		frame := spinnerFrames[int(v.elapsed/tickInterval)%len(spinnerFrames)]
 		sb.WriteString("\n" + styleHint.Render(fmt.Sprintf(
 			"%s 正在读取并计算（已用 %.1f 秒）…", frame, v.elapsed.Seconds())) + "\n")
-		return sb.String()
+		// **末尾不留换行**（下面那个 return 同理）：padTo 按 "\n" 切行，
+		// 多出来的那个空元素让它多算一行 —— 内容放不下时
+		// "…还有 N 行没显示"里的 N 会比实际丢掉的多一，等于屏幕上
+		// 印一个错的数字；内容恰好放得下时还会被白白砍掉一行。
+		// joinHorizontal 里记过同一条，Library 与这个详情页都踩过。
+		return strings.TrimSuffix(sb.String(), "\n")
 	}
 
 	sb.WriteString("\n")
 	sb.WriteString(v.results(width))
-	return sb.String()
+	return strings.TrimSuffix(sb.String(), "\n")
 }
 
 // results 渲染扫描结果那一段。**只在扫描结束后调用**。

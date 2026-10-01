@@ -532,6 +532,67 @@ func TestLibrary_模型多时安全提示仍可见(t *testing.T) {
 	}
 }
 
+// **列表满时最后一行不能被 padTo 挤掉 —— 这条必须经过根视图。**
+//
+// 直接调 lib.View() 看不出问题（实测：那样调用一切正常，选中项可见、
+// 提示的数字也自洽）；症状由两处**独立的**成因叠加产生：
+//   - 范围提示追加在 listCap 之外 —— 原始输出比高度多一行
+//   - 列表末尾的 "\n" —— strings.Split 多算一个空元素
+//
+// 两者都只在根视图的 padTo 那一层才显形：它砍掉最后两行，
+// 而光标停在末尾时，被砍掉的正是用户选着的那一条
+// （实测 30 个模型、120×10/20/30 三档：屏幕上最后一个名字一直是倒数第二个）。
+//
+// 既有的 TestLibrary_* 全部直接调 lib.View —— 这个结构缺口与 Task 2 修的
+// "单测绿而真终端坏"同一类：**验证路径绕过了出事的那一层**。
+func TestLibrary_经根视图不丢最后一行(t *testing.T) {
+	lib := NewLibrary()
+	items := make([]discover.Item, 30)
+	for i := range items {
+		items[i] = discover.Item{
+			Source: discover.SourceGeneric,
+			Name:   fmt.Sprintf("model-%02d.gguf", i),
+			Path:   fmt.Sprintf("/x/%02d", i), Size: int64(i),
+		}
+	}
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{Items: items}
+	}
+	lib.fill = func(it *discover.Item) *discover.Item { return it }
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+	// 走真实的 Fill 消息把"正在读取…"那一行消掉：留着它，
+	// 列表高度又少一行，测的就不是"列表满"这一条了
+	for i := range items {
+		lib2, _ = lib.Update(itemFilledMsg{index: i, item: items[i], gen: lib.gen})
+		lib = lib2.(Library)
+	}
+	// 光标走到最后一项 —— 被 padTo 砍掉的那一行正是它
+	for range len(items) - 1 {
+		lib2, _ = lib.Update(key("down"))
+		lib = lib2.(Library)
+	}
+	if lib.cursor != len(items)-1 {
+		t.Fatalf("光标在第 %d 项，没走到最后一项", lib.cursor)
+	}
+
+	// 高度至少覆盖三档：这条与高度无关（列表满就丢）
+	for _, h := range []int{10, 20, 30} {
+		m, _ := New(lib).Update(tea.WindowSizeMsg{Width: 120, Height: h})
+		out := m.(Model).View()
+
+		want := "▸ " + lib.items[lib.cursor].Name
+		if !strings.Contains(out, want) {
+			t.Errorf("高度 %d：光标在最后一项，屏幕上却没有 %q —— 被 padTo 砍掉了:\n%s",
+				h, want, out)
+		}
+		// 范围提示那一行也要活下来（它是第二个被砍的候选）
+		if len(lib.items) > h-2 && !strings.Contains(out, "显示第") {
+			t.Errorf("高度 %d：列表放不下，范围提示却被 padTo 砍掉了:\n%s", h, out)
+		}
+	}
+}
+
 // **目录警告要折行，不能被终端的宽度截掉。**
 //
 // 这条必须**从根 Model 渲染**：Library.View 自己不截断，
