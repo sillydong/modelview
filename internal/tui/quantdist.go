@@ -47,8 +47,10 @@ func quantDistText(m *model.Model) string {
 		//
 		// **不说"唯一"**：internal/ref 的速查表位宽走的是它自己的
 		// `humanFloat`（`%g` 10 位有效数字），那是另一条出口。
-		// 今天两者在全部 40 个已知位宽上逐一致（ref 那个无损），
-		// 但那是**巧合一致**而非契约 —— 别把"唯一"当保证写进注释。
+		// 两者的逐条一致性现在由 `ref.TestQuants_位宽的两条出口一致`
+		// 钉着（23 个量化位宽逐字节比），所以它是**契约**了；
+		// 但契约是"两边打出同一个字符串"，不是"只有这一个格式器" ——
+		// 新写显示位宽的地方仍然走 render.BitsPerWeight。
 		fmt.Fprintf(&sb, "\n整体       %s bit/权重（含块头开销）\n",
 			render.BitsPerWeight(float64(total)*8/float64(params)))
 	}

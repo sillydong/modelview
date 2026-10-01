@@ -8,6 +8,7 @@ import (
 
 	"github.com/sillydong/modelview/internal/decode"
 	"github.com/sillydong/modelview/internal/model"
+	"github.com/sillydong/modelview/internal/render"
 )
 
 // 每个"已识别的量化类型"都必须有条目 —— 否则用户看到文件里的 Q5_K，
@@ -256,6 +257,53 @@ func TestQuants_位宽来源唯一(t *testing.T) {
 		if want := humanFloat(16 / bpw); got != want {
 			t.Errorf("%s 的压缩比写的是 %q，算出来是 %q", name, got, want)
 		}
+	}
+}
+
+// **位宽的两条出口必须打出同一个字符串。**
+//
+// 位宽在界面上有两处消费者，各自走一个格式化函数：
+//   - `render.BitsPerWeight`（量化分布的按类型表、张量详情页、张量行末尾）
+//   - `humanFloat`（速查表的 Field{"位宽", …}，本包的出口）
+//
+// 今天两者在全部 23 条上逐一致，但**那是巧合而非契约** ——
+// 在加这条测试之前，没有任何东西对照过它们（`tui/quantdist.go` 的注释
+// 自己承认了这一点）。分叉的表现是"速查表说 6.5625、分布表说 6.562"，
+// 两个都像事实，而没有东西会红 —— 正是 internal/render 这个包存在的
+// 全部理由（见它的包注释）。这条测试就是那份契约：拿同一批真实位宽，
+// 把两个出口都跑一遍，逐字节比。
+//
+// 数值来源是 `bpwOf`（与生成表时同一个）—— 这里要钉的是**格式化**，
+// 数值本身由 TestQuants_位宽来源唯一 守着；两个格式化函数分头演化
+// 才是没人看着的那条缝。
+func TestQuants_位宽的两条出口一致(t *testing.T) {
+	checked := 0
+	for _, tb := range Tables() {
+		for _, e := range tb.Entries {
+			got := e.Field("位宽")
+			// 空表示不是量化条目；"未收录"是"两个来源都没有"的显式哨兵
+			//（见 quantsTable 的那个分支），它不是一个能比的数
+			if got == "" || got == "未收录" {
+				continue
+			}
+			name := strings.TrimPrefix(e.ID, "quant:")
+			bpw, ok := bpwOf(name)
+			if !ok {
+				t.Errorf("%s 有「位宽」字段却取不到位宽", e.ID)
+				continue
+			}
+			checked++
+			if want := render.BitsPerWeight(bpw) + " bit/权重"; got != want {
+				t.Errorf("%s 的位宽两个出口打出来不一样：速查表 %q，render %q —— "+
+					"用户会在两个页面上看到两个都像事实的数字", e.ID, got, want)
+			}
+		}
+	}
+	// 反向门禁：0 条时这条测试是空转的（与 TestQuants_覆盖全部量化类型
+	// 那个 wantCovered 同一个约定：增删量化条目时同步改这里）
+	const wantChecked = 23
+	if checked != wantChecked {
+		t.Fatalf("只对照了 %d 条位宽，预期 %d 条", checked, wantChecked)
 	}
 }
 
