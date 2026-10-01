@@ -190,19 +190,14 @@ func TestApp_内容超宽被截断(t *testing.T) {
 
 // 标题与帮助栏超宽同样要截 —— 它们是另外两处调用点。
 func TestApp_标题与帮助栏超宽被截断(t *testing.T) {
-	m := New(viewWithBody{body: "x"})
-	m2, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 6})
-	m = m2.(Model)
-
-	// 栈顶没有 Title() 时用默认标题；这里用有超长标题的视图
-	long := longTitleView{}
-	m3, _ := New(long).Update(tea.WindowSizeMsg{Width: 20, Height: 6})
-	for i, l := range strings.Split(m3.(Model).View(), "\n") {
+	// 用有超长标题与超长帮助栏的视图：栈顶没有 Title() 时会退回默认标题，
+	// 那样这一格就测不到标题那一处截断
+	m, _ := New(longTitleView{}).Update(tea.WindowSizeMsg{Width: 20, Height: 6})
+	for i, l := range strings.Split(m.(Model).View(), "\n") {
 		if w := lipgloss.Width(l); w > 20 {
 			t.Errorf("第 %d 行宽 %d 超过 20: %q", i, w, l)
 		}
 	}
-	_ = m
 }
 
 type longTitleView struct{}
