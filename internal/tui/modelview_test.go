@@ -346,7 +346,12 @@ func TestModelView_右栏对齐(t *testing.T) {
 	}
 }
 
-// 元数据一屏放不下时要**明说漏了多少**，不能静默只显示前 N 条。
+// 元数据一屏放不下时要**明说显示了哪一段**，不能静默只显示前 N 条。
+//
+// Task 9 把这句话从"还有 N 条没显示（滚动在 ④b-2 里做）"改成了范围 ——
+// ④b-1 那一版没有内容光标，滚动也还没做；现在两样都有了，
+// 报条数就不再够用（用户要知道的是"现在屏幕上是第几条到第几条"）。
+// 措辞的精确性由 `TestModelView_元数据提示的范围与实际显示一致` 盯着。
 func TestModelView_元数据超屏要说明(t *testing.T) {
 	m := fakeModel()
 	for i := range 60 {
@@ -356,13 +361,13 @@ func TestModelView_元数据超屏要说明(t *testing.T) {
 	v := gotoSection(loadModelView(m), sectionMetadata)
 	out := v.View(120, 24)
 
-	if !strings.Contains(out, "还有") || !strings.Contains(out, "没显示") {
-		t.Errorf("元数据 %d 条、屏幕 24 行，没说明漏了多少:\n%s", len(m.Metadata), out)
+	if !strings.Contains(out, "显示第") || !strings.Contains(out, "共 63 条") {
+		t.Errorf("元数据 %d 条、屏幕 24 行，没说明显示了哪一段:\n%s", len(m.Metadata), out)
 	}
 	// 反面对照：放得下时不该出现这句话
 	small := gotoSection(loadModelView(fakeModel()), sectionMetadata)
-	if strings.Contains(small.View(120, 40), "没显示") {
-		t.Error("3 条元数据、40 行的屏幕，不该说「还有没显示的」")
+	if strings.Contains(small.View(120, 40), "显示第") {
+		t.Error("3 条元数据、40 行的屏幕，不该说「显示第 N–M 条」")
 	}
 }
 
