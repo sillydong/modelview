@@ -63,12 +63,30 @@ type View interface {
 // 真要把方法名也封住，得把它小写成 `modal()`。
 type modalView interface{ Modal() bool }
 
+// top 返回栈顶视图。
+//
+// **栈永不为空，所以这里没有兜底**：`New` 保证至少一层，`pop` 与
+// `popToMsg` 都在只剩一层时停手 —— 空栈意味着内部不变量被破坏，
+// 不是用户能到达的状态（零值的 Model 同理：它本来就不该被构造）。
+//
+// 原先 `View()` 里有一条 `len(m.stack) == 0 { return "" }`，而
+// `topModal` / `forward` / `header` / `Init` 四处都没有 —— 同一个前提
+// 五个读者读出两种结论。而且兜底那一处会把"栈被清空"咽成一片空白：
+// 界面全白、没有任何东西会红，比当场崩掉难查得多。
+// 取舍统一成这一处显式 panic，理由在这里说一次。
+func (m Model) top() View {
+	if len(m.stack) == 0 {
+		panic("tui: 视图栈为空 —— New() 必须给一个栈底，pop 不该弹掉最后一层")
+	}
+	return m.stack[len(m.stack)-1]
+}
+
 // topModal 判断栈顶视图是否要独占按键。
 //
 // **只看栈顶**：下层视图即使处在模态状态也不该拦按键 ——
 // 用户看到的是栈顶那一屏，按键就该归它。
 func (m Model) topModal() bool {
-	mv, ok := m.stack[len(m.stack)-1].(modalView)
+	mv, ok := m.top().(modalView)
 	return ok && mv.Modal()
 }
 
@@ -195,9 +213,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // **栈顶可能是被替换过的**（视图处理消息后返回一个新视图），
 // 所以要写回 stack[len-1]。
 func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
-	top := len(m.stack) - 1
-	next, cmd := m.stack[top].Update(msg)
-	m.stack[top] = next
+	i := len(m.stack) - 1
+	next, cmd := m.top().Update(msg)
+	m.stack[i] = next
 	return m, cmd
 }
 
@@ -207,10 +225,7 @@ func (m Model) pop() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	if len(m.stack) == 0 {
-		return ""
-	}
-	top := m.stack[len(m.stack)-1]
+	top := m.top()
 	body := padTo(top.View(m.width, m.contentHeight()), m.contentHeight(), m.width)
 
 	// 用 lipgloss 拼而不是手写 "\n"：它按**显示宽度**算，
@@ -232,7 +247,7 @@ func (m Model) contentHeight() int {
 // header 是顶部那一行：显示栈顶视图的标题。
 func (m Model) header() string {
 	title := "modelview"
-	if t, ok := m.stack[len(m.stack)-1].(interface{ Title() string }); ok {
+	if t, ok := m.top().(interface{ Title() string }); ok {
 		title = t.Title()
 	}
 	return styleTitle.Render(title)

@@ -232,8 +232,12 @@ func TestApp_Init会被调用(t *testing.T) {
 	}
 }
 
-// push 进来的视图也要跑它的 Init —— 不跑的话"进模型视图"会停在"正在解析…"
-func TestApp_push的视图也会跑Init(t *testing.T) {
+// **压栈（pushMsg）**进来的视图也要跑它的 Init —— 不跑的话
+// "进模型视图"会停在"正在解析…"。
+//
+// 名字里写"压栈"而不是"push"：`pushCmd` 是造命令的辅助函数、
+// `pushMsg` 才是"压栈"这件事，两个都叫 push 的话读名字分不出这条测的是哪个。
+func TestApp_压栈的视图也会跑Init(t *testing.T) {
 	ran := false
 	m := New(fakeView{title: "根"})
 	_, cmd := m.Update(pushMsg{v: initTrackingView{onInit: func() { ran = true }}})
