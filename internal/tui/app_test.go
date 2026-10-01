@@ -6,6 +6,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/sillydong/modelview/internal/model"
+	"github.com/sillydong/modelview/internal/ref"
 )
 
 // fakeView 是最小的 View 实现，只回显自己的标题。
@@ -413,5 +416,71 @@ func TestApp_根视图不吞按键(t *testing.T) {
 					top.seen, tc.key)
 			}
 		})
+	}
+}
+
+// namedView 给跨视图的约定测试用：一个视图 + 它在报告里的名字。
+type namedView struct {
+	name string
+	v    View
+}
+
+// allViews 把当前**每一个** View 实现各造一个实例。
+//
+// 跨视图的约定（末尾换行、行数与高度）只有把每个实现都列进来才守得住 ——
+// 漏一个就是一条没人看的路径。加了新视图就往这里加一行。
+func allViews() []namedView {
+	lib, _ := fakeLibrary()
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+
+	m := fakeModel()
+	mv := loadModelView(m)
+
+	// TensorView 要**两条分支各来一个**：扫描中 / 已出结果。
+	// 只造"扫描中"的那个，`results()` 那一支的末尾换行就没人看 ——
+	// 变异验证确认过：把它的 TrimSuffix 去掉，测试照样绿。
+	// 整数类型 + 有 Stats 是 NeedsWork 为假的捷径（既非量化也非浮点）。
+	done := &model.Tensor{Name: "done.weight", Dims: []int64{4, 4},
+		Dtype: model.DtypeI32, ByteSize: 64, ParamCount: 16,
+		Stats: &model.Stats{Count: 16}}
+	m2 := fakeModel()
+	m2.Tensors = append(m2.Tensors, done)
+
+	return []namedView{
+		{"Library", lib},
+		{"ModelView/概览", mv},
+		{"ModelView/元数据", gotoSection(mv, sectionMetadata)},
+		{"ModelView/张量", gotoSection(mv, sectionTensors)},
+		{"ModelView/量化分布", gotoSection(mv, sectionQuantDist)},
+		{"ModelView/速查表", gotoSection(mv, sectionRef)},
+		{"TensorsView", NewTensorsView(m)},
+		{"TensorView/扫描中", NewTensorView(m, m.Tensors[0])},
+		{"TensorView/已出结果", NewTensorView(m2, done)},
+		{"RefView", NewRefView(nil)},
+		{"EntryView", NewEntryView(nil, ref.Entry{ID: "quant:Q4_K", Title: "Q4_K"})},
+	}
+}
+
+// **每个视图交给根视图的原始输出都不许以换行结尾。**
+//
+// padTo 是按 "\n" 切行数出来的：末尾那个空元素会让它**多算一行** ——
+// 内容放不下时"…还有 N 行没显示"里的 N 比实际丢掉的多一（屏幕上印一个
+// 错的数字），内容恰好放得下时还会被白白砍掉一行。
+// 实测踩过三次：Library、TensorView、EntryView（joinHorizontal 的注释里
+// 已经记过同一条，那三处都没走那条约定）。
+//
+// 这条从**各层自己的 View** 断言，不经根视图：经根视图是测不出来的 ——
+// padTo 永远把结果整理成恰好 h 行（④b-1 的教训）。
+func TestViews_原始输出不留末尾换行(t *testing.T) {
+	for _, nv := range allViews() {
+		for _, h := range []int{6, 20, 40} {
+			out := nv.v.View(120, h)
+			if strings.HasSuffix(out, "\n") {
+				t.Errorf("%s（h=%d）：交给根视图的原始输出以换行结尾 —— "+
+					"padTo 会因此多算一行、多砍一行，并把「还有 N 行」说大一",
+					nv.name, h)
+			}
+		}
 	}
 }

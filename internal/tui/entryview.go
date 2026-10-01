@@ -52,5 +52,10 @@ func (v EntryView) View(width, _ int) string {
 	// **末尾不留换行**：padTo 按 "\n" 切行，多出来的空元素让它多算一行 ——
 	// "…还有 N 行没显示"里的 N 会比实际丢掉的多一（joinHorizontal 里
 	// 记过同一条）。Task 8 会把这一页补全，补的时候别把换行写回来。
-	return strings.TrimSuffix(sb.String(), "\n")
+	//
+	// 用 TrimRight 而不是 TrimSuffix：ID 那一行写的是 "\n\n"（它后面
+	// 本该跟一个空行），没有字段也没有 Notes 时，末尾就挂着两个换行 ——
+	// 只去一个的话还剩一个（TestViews_原始输出不留末尾换行 抓到的正是
+	// 这一种，审计探针里那条造了字段与 Notes，绕开了它）。
+	return strings.TrimRight(sb.String(), "\n")
 }
