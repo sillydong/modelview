@@ -159,9 +159,10 @@ func QuantExistingLines(q *model.QuantInfo) []string {
 	if q.ZeroScaleBlocks > 0 {
 		warn = append(warn, fmt.Sprintf("⚠压平 %s 子块", humanize.Count(q.ZeroScaleBlocks)))
 	}
-	// 被压得最狠的那个子块。model.QuantInfo 的注释承诺了界面上要显示它
-	//（"第 N 个子块（张量内第 N×BlockElems 个权重）"），
-	// 只进 JSON 不显示的话那个承诺就是假的
+	// 被压得最狠的那个子块。model.QuantInfo 的注释要求界面上必须显示它
+	//（只进 JSON 不显示的话，"被压得最狠的是哪个"这个结论用户就看不到）——
+	// 显示的**形状**（`最扁 #N（比值 x）`）定义在 model 那一边的
+	// FlattestIndex 注释里，这里照它打；两处各写一遍形状会漂移。
 	if q.FlattestRatio < 1 && q.FlattestRatio >= 0 {
 		warn = append(warn, fmt.Sprintf("最扁 #%d（比值 %s）",
 			q.FlattestIndex, humanize.Float(q.FlattestRatio)))

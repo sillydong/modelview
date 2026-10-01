@@ -72,8 +72,18 @@ type QuantInfo struct {
 	// 会把「这个块的数值本来就小」误判成「被压平」。
 	// 归一后的比值才表示编码器把这个子块挤到了多窄（0 = 完全压平）。
 	//
-	// FlattestIndex 是**子块序号**，不是字节偏移 ——
-	// 界面上应显示成「第 N 个子块（张量内第 N×BlockElems 个权重）」。
+	// FlattestIndex 是**子块序号**（张量内的顺序，0 基），不是字节偏移 ——
+	// 界面上的显示形如「最扁 #7（比值 0.0200）」：`#N` 就是这个序号。
+	//
+	// **它曾经承诺显示成「第 N 个子块（张量内第 N×BlockElems 个权重）」，
+	// 那句话没有实现，而且不该实现 —— 量过宽度了**：
+	// 最坏情况下加这段字之后是 89 显示列（真实形状：本仓实测过一个
+	// 3.11 亿权重的量化张量，序号 8 位、权重偏移 9 位），再加 TUI 的
+	// 2 列缩进是 91 列 —— 而 80 列是 spec 定的最小终端，TUI 的
+	// truncateLines 从**右边**切，切掉的恰好是末尾那个比值。
+	// 比值才是"被压得最狠"的唯一证据（render 里那两条注释写着必须显示），
+	// 用它换一个可以从序号乘出来的偏移量，是拿结论换中间量。
+	// 序号与 BlockElems 都在（--json 里是原值），要换算的用户自己乘。
 	FlattestRatio float64 `json:"flattest_ratio"`
 	FlattestScale float64 `json:"flattest_scale"`
 	FlattestIndex int64   `json:"flattest_index"`
