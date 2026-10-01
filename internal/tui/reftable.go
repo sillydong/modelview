@@ -340,18 +340,10 @@ func (v RefView) entryLines(width, listCap int) string {
 	}
 
 	focusHere := v.search != "" || v.focus == focusEntries
-	// **要写"显示第 N–M 条"就先把它那一行从容量里扣掉，再算窗口。**
-	//
-	// 反过来做（先按 listCap 取窗口、再砍掉一行放提示）砍掉的是窗口的
-	// 最后一条 —— 而光标停在最后一条时，被砍掉的正是用户正选着的那一条。
-	// 屏幕上看起来只是"少了一条"，根本看不出少的是选中的那条：
-	// 用户按 Enter 打开的会是一个自己没看见的条目。
-	// 这条是计划里没写到的，`TestRefView_选中项始终可见` 直接红了。
-	rows := listCap
-	if len(es) > rows && rows > 1 {
-		rows--
-	}
-	start, end := window(len(es), v.entryCursor, rows)
+	// 窗口与"要不要打范围提示"都交给 listWindow（先扣提示行、再算窗口，
+	// 且只有真放得下才打）。这条是计划里没写到的修法：
+	// `TestRefView_选中项始终可见` 当初直接红了。
+	start, end, showHint := listWindow(len(es), v.entryCursor, listCap)
 	lines := make([]string, 0, end-start+1)
 	for i := start; i < end; i++ {
 		title := humanize.Truncate(es[i].Title, max(width-4, 8))
@@ -361,9 +353,7 @@ func (v RefView) entryLines(width, listCap int) string {
 		}
 		lines = append(lines, "  "+title)
 	}
-	// "显示第 N–M 条"要算进高度里，否则它会被根视图的 padTo 顶掉，
-	// 换成一句信息量更差的"…还有 1 行没显示"
-	if (start > 0 || end < len(es)) && len(lines) < listCap {
+	if showHint {
 		lines = append(lines, styleDim.Render(fmt.Sprintf(
 			"…显示第 %d–%d 条，共 %d 条", start+1, end, len(es))))
 	}

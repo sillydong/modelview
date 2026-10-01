@@ -274,6 +274,32 @@ func window(total, cursor, capacity int) (start, end int) {
 	return start, start + capacity
 }
 
+// listWindow 算出要渲染的区间 [start,end)，以及还有没有没显示完的
+// （该不该打一行"显示第 N–M 个"的范围提示）。
+//
+// **提示行必须先扣**：反过来（先按满容量取窗口、再砍一行放提示）砍掉的是
+// 窗口的**最后一行** —— 光标停在末尾时那正是用户选着的那一条，而提示里的
+// start/end 来自截断前的窗口，屏幕上印的是一句对不上的话
+// （实测：显示 101–118，提示写"显示第 102–120 个"）。
+//
+// showHint 用 `end-start < capacity` 表达"这一行放得下吗"，
+// **不再依赖调用方把自己拼的行数与 capacity 保持同步** ——
+// 那正是 Library 抄错的地方：它有两个可选尾行（范围提示 + 在途进度），
+// 却只按一个扣减，容量只剩 1 行时提示与进度一起被 padTo 顶掉
+// （这个模式在四处各写一遍，错了三次；所以判定收在这一个函数里）。
+//
+// capacity 是**扣掉标题、提示行等之后留给列表的总行数**，包含范围提示行：
+// 有内容没显示完时这里会自己让出一行给它。
+func listWindow(total, cursor, capacity int) (start, end int, showHint bool) {
+	rows := capacity
+	if total > rows && rows > 1 {
+		rows--
+	}
+	start, end = window(total, cursor, rows)
+	showHint = (start > 0 || end < total) && end-start < capacity
+	return start, end, showHint
+}
+
 // padTo 把 body 补到恰好 h 行，每行不超过 w 显示列（截断交给 truncateLines）。
 //
 // **必须补**：不补的话底部帮助栏会浮在内容下方而不是贴着屏幕底，

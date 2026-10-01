@@ -197,7 +197,13 @@ func (l Library) View(width, height int) string {
 		sb.WriteString(head)
 	}
 
-	// 给列表留的行数：总高 − 提示 − 进度行（如果有）
+	// 给列表留的行数：总高 − 提示 − **进度行（如果有）**。
+	//
+	// Library 是唯一有**两个**可选尾行的视图（范围提示 + 在途进度），
+	// 所以这一个 capacity 必须把进度行先让出来，范围提示那一行由
+	// listWindow 自己再扣 —— 原先只按一个扣减、判断里又少了
+	// "这一行放得下吗"那半句，矮终端下两行会一起被 padTo 顶掉，
+	// 屏幕上换成"…还有 2 行没显示"（实测 30 个模型、终端高 7）。
 	footerLines := 0
 	if l.filled < len(l.items) {
 		footerLines = 1
@@ -207,19 +213,9 @@ func (l Library) View(width, height int) string {
 		listCap = 1
 	}
 
-	// **"共 N 个，显示第 X–Y 个"那一行要先从容量里扣出来**，
-	// 再算窗口（与 TensorsView / RefView 同一条修法）。
-	//
-	// 追加在容量之外的话，原始输出比高度多一行 —— 根视图的 padTo
-	// 于是砍掉**最后两行**（列表最后一行 + 这行提示）。光标停在末尾时，
-	// 被砍掉的正是用户选着的那一条：屏幕上看起来只是少了个模型，
-	// 用户按 Enter 打开的是一个自己没看见的条目（实测 30 个模型、
-	// 高 10/20/30 三档：最后一个模型在屏幕上就是不见）。
-	rows := listCap
-	if len(l.items) > rows && rows > 1 {
-		rows--
-	}
-	start, end := window(len(l.items), l.cursor, rows)
+	// 窗口与"要不要打范围提示"都交给 listWindow（先扣提示行、再算窗口，
+	// 且只有真放得下才打）—— 理由写在它那里，不在这里重抄。
+	start, end, showHint := listWindow(len(l.items), l.cursor, listCap)
 
 	// **自己拼行、最后 Join，末尾不留换行** —— 这是 joinHorizontal 里
 	// 记过的那条：留了的话 padTo 按 "\n" 切会多出一个空元素，
@@ -230,7 +226,7 @@ func (l Library) View(width, height int) string {
 	for i := start; i < end; i++ {
 		lines = append(lines, l.row(i, l.items[i]))
 	}
-	if start > 0 || end < len(l.items) {
+	if showHint {
 		lines = append(lines, styleDim.Render(fmt.Sprintf(
 			"  …共 %d 个，显示第 %d–%d 个", len(l.items), start+1, end)))
 	}

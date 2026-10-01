@@ -459,29 +459,16 @@ func (v ModelView) metadata(height int) string {
 	if listCap < 1 {
 		listCap = 1
 	}
-	// **先扣掉提示行，再算窗口** —— 反过来（先按满容量算窗口、再砍一行放提示）
-	// 是本仓踩过三次的写法：砍掉的永远是**最后一行**，而光标停在最后一条时
-	// 砍的就是选中那条。更糟的是提示里的 `start/end` 来自**截断前**的窗口，
-	// 于是屏幕上的范围与提示写的范围不一致 —— 屏幕上印一句假话。
-	//
-	// 实测过的旧版（`TensorsView`）：屏幕上显示 101–118，提示写"显示第 102–120 个"。
-	// `Library`、`TensorsView`、`RefView` 都踩过，各自修过一次。
+	// 窗口与"要不要打范围提示"都交给 listWindow（先扣提示行、再算窗口，
+	// 且只有真放得下才打）—— 那三条理由写在那里，不在这里重抄一遍。
 	n := len(v.m.Metadata)
-	rows := listCap
-	if n > rows && rows > 1 {
-		rows--
-	}
-	start, end := window(n, v.metaCursor, rows)
+	start, end, showHint := listWindow(n, v.metaCursor, listCap)
 	focusHere := v.focus == focusBody
-	lines := make([]string, 0, rows+1)
+	lines := make([]string, 0, end-start+1)
 	for i := start; i < end; i++ {
 		lines = append(lines, v.metaLine(i, v.m.Metadata[i], focusHere))
 	}
-	// `len(lines) < listCap` 是给极矮终端留的：高度只够一行列表时
-	// 扣不出提示行来，硬加会把内容顶出去、换成 padTo 那句"还有 N 行没显示"。
-	// （`TensorsView` 同一个位置有同一个条件。）
-	if (start > 0 || end < n) && len(lines) < listCap {
-		// 这里**不再砍行** —— 窗口已经扣过提示行了
+	if showHint {
 		lines = append(lines, styleDim.Render(fmt.Sprintf(
 			"…显示第 %d–%d 条，共 %d 条", start+1, end, n)))
 	}

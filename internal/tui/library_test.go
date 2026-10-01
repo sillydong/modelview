@@ -674,6 +674,77 @@ func TestLibrary_经根视图不丢最后一行(t *testing.T) {
 	}
 }
 
+// **矮终端下范围提示与进度行都要活下来 —— 容量只够一行时不能硬塞。**
+//
+// Library 是唯一有**两个**可选尾行的视图（范围提示 + 在途进度），
+// 而原先只按一个扣减、判断里又少了"这一行放得下吗"那半句：
+// 终端高 7、30 个模型、孤儿提示 + 在途进度下，范围提示与进度行会一起
+// 被 padTo 顶掉，屏幕上换成"…还有 2 行没显示" —— 用户既不知道
+// 自己看到的是第几个，也不知道后面还有没有（实测）。
+//
+// 两档分别守两件事：①够放时提示必须在（去掉 listWindow 里的 `rows--`
+// 就没有提示了）；②不够放时不许硬塞（少了 `end-start < capacity`
+// 那半句，padTo 会把提示与进度一起顶掉）。
+func TestLibrary_矮终端范围提示与进度行都在(t *testing.T) {
+	items := make([]discover.Item, 30)
+	for i := range items {
+		items[i] = discover.Item{Source: discover.SourceGeneric,
+			Name: fmt.Sprintf("model-%02d.gguf", i),
+			Path: fmt.Sprintf("/x/%02d", i), Size: int64(i)}
+	}
+	orphan := discover.Item{Name: "sha256-orphan", Path: "/blobs/sha256-orphan", Size: 4096}
+	newLib := func(res discover.Result) Library {
+		lib := NewLibrary()
+		lib.scan = func(context.Context, discover.Options) discover.Result { return res }
+		// 不投递任何 Fill 结果 —— 这样"正在读取…"那一行是在途的
+		lib.fill = func(it *discover.Item) *discover.Item { return it }
+		lib2, _ := lib.Update(lib.Init()())
+		lib = lib2.(Library)
+		// 光标走到中间：范围提示才一定有东西可说（start > 0）
+		for range 10 {
+			lib2, _ = lib.Update(key("down"))
+			lib = lib2.(Library)
+		}
+		return lib
+	}
+	view := func(lib Library) string {
+		m, _ := New(lib).Update(tea.WindowSizeMsg{Width: 120, Height: 7})
+		return m.(Model).View()
+	}
+	selected := func(lib Library) string { return "▸ " + lib.items[lib.cursor].Name }
+
+	// ① 孤儿提示 2 行 + 进度行：容量 2 → 一个模型 + 范围提示 + 进度行，正好塞满
+	lib := newLib(discover.Result{Items: items, Orphans: []discover.Item{orphan}})
+	out := view(lib)
+	if strings.Contains(out, "没显示") {
+		t.Errorf("屏幕上出现了 padTo 的「还有 N 行没显示」—— 视图没算准高度:\n%s", out)
+	}
+	if !strings.Contains(out, "显示第") {
+		t.Errorf("列表没显示完，范围提示那一行不在屏上:\n%s", out)
+	}
+	if !strings.Contains(out, "正在读取格式与参数量") {
+		t.Errorf("在途的进度行被顶掉了:\n%s", out)
+	}
+	if !strings.Contains(out, selected(lib)) {
+		t.Errorf("光标选中的那一行不在屏上:\n%s", out)
+	}
+
+	// ② 再加一条"未完成的下载"（提示 3 行）：容量只剩 1 行，装不下范围提示 ——
+	//    这时**只能**保住进度行；硬塞的话两行都会换成 padTo 那句更差的话
+	lib = newLib(discover.Result{Items: items, Orphans: []discover.Item{orphan},
+		InProgress: []discover.Item{{Name: "sha256-x-partial", Path: "/p", Size: 1 << 30}}})
+	out = view(lib)
+	if strings.Contains(out, "没显示") {
+		t.Errorf("容量只剩 1 行时硬塞提示行，padTo 把提示与进度一起顶掉了:\n%s", out)
+	}
+	if strings.Contains(out, "显示第") {
+		t.Errorf("容量只剩 1 行，范围提示放不下却还是塞进去了:\n%s", out)
+	}
+	if !strings.Contains(out, "正在读取格式与参数量") {
+		t.Errorf("在途的进度行被顶掉了:\n%s", out)
+	}
+}
+
 // **目录警告要折行，不能被终端的宽度截掉。**
 //
 // 这条必须**从根 Model 渲染**：Library.View 自己不截断，

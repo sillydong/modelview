@@ -335,30 +335,15 @@ func (v TensorsView) View(width, height int) string {
 	if listCap < 1 {
 		listCap = 1
 	}
-	// **要写"显示第 N–M 个"就先把它那一行从容量里扣掉，再算窗口。**
-	//
-	// 反过来做（先按 listCap 取窗口、再砍掉一行放提示）会同时坏两件事，
-	// 而且都看不出来：
-	//   - 砍掉的是窗口的**最后一条** —— 光标停在最后一条时，被砍掉的
-	//     正是用户选着的那一条（实测：120 个张量、光标在最后一个、
-	//     高 20，屏幕上只到第 118 个）
-	//   - 提示里的 N–M 是按**砍之前**的窗口算的，于是屏幕上印的是
-	//     一句假话：显示 101–118，却写"显示第 102–120 个"
-	// 先把提示行扣出来，`window` 给的 `[start, end)` 就正好是屏幕上
-	// 真正显示的那一段，提示照它写，两者不可能不一致。
-	rows := listCap
-	if len(idx) > rows && rows > 1 {
-		rows--
-	}
-	start, end := window(len(idx), v.cursor, rows)
+	// 窗口与"要不要打范围提示"都交给 listWindow（先扣提示行、再算窗口，
+	// 且只有真放得下才打）—— 那三条理由（砍掉选中项、提示的范围与屏幕
+	// 不一致、极矮终端硬塞）写在那里，不在这里重抄一遍。
+	start, end, showHint := listWindow(len(idx), v.cursor, listCap)
 	lines := make([]string, 0, end-start+1)
 	for i := start; i < end; i++ {
 		lines = append(lines, v.row(i, v.m.Tensors[idx[i]], nameWidth))
 	}
-	// **"显示第 N–M 个"要算进高度里**：不预留的话最后一行会被
-	// 根视图的 padTo 顶掉，换上一句"…还有 1 行没显示" ——
-	// 两个提示都说得通，但用户看到的是信息量更差的那个。
-	if (start > 0 || end < len(idx)) && len(lines) < listCap {
+	if showHint {
 		lines = append(lines, styleDim.Render(fmt.Sprintf(
 			"…显示第 %d–%d 个，共 %d 个", start+1, end, len(idx))))
 	}
