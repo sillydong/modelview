@@ -291,9 +291,11 @@ func lookupKey(key string) (keyEntry, bool, bool) {
 // 读起来是"这个编号已废弃"而不是"这是一种现役量化档"。
 //
 // **现在有真实消费者了**：TUI 的元数据栏经 `tui.fileTypeEntry` 调它 ——
-// `general.file_type` 那一行会渲染出 `[档位名]` 加一个跳转记号 `◂`，
-// 按 Enter 还能进这个条目的详情页。所以上面说的"列出来才有解释"
-// 不再是"为展示层准备好了"，而是一条走得到的路。
+// qwen2.5:3b 上那一行是
+// `general.file_type  15  [general.file_type = 15（MOSTLY_Q4_K_M）] ◂`
+// （方括号里是本条目的标题），按 Enter 能进它的详情页。
+// 所以上面说的"列出来才有解释"不再是"为展示层准备好了"，
+// 而是一条走得到的路。
 var fileTypeValues = []struct {
 	code    uint32
 	enum    string

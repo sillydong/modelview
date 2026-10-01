@@ -15,7 +15,12 @@ const (
 	keyTab       = "Tab"
 	keyRescan    = "r"
 	keyQuit      = "q"
-	keyHelp      = "?"
+	// **`?` 至今没有任何处理分支**：spec §8 的按键栏写着"`?` 速查表、
+	// 随时可开"，而实现里速查表是从"速查表"栏目按 Enter 进的
+	//（见 `ModelView` 的 sectionRef）。常量留着是给那一天用的，
+	// **在那之前任何 Help() 都不许列它** —— 列了就是骗用户按，
+	// 而这一条有两个测试盯着（ModelView / Library 的"帮助栏只列支持的键"）。
+	keyHelp = "?"
 )
 
 // helpLine 是底部的按键提示。
