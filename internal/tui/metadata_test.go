@@ -431,42 +431,114 @@ func TestModelView_元数据为空不崩(t *testing.T) {
 	}
 }
 
-// **帮助栏与实际行为必须逐栏一致** —— `keys.go` 那条"列了不支持的等于
-// 骗用户按、支持的不能漏"的机械化版本。
+// **帮助栏与实际行为必须逐栏、逐行一致** —— `keys.go` 那条"列了不支持的
+// 等于骗用户按、支持的不能漏"的机械化版本。
 //
 // 不是重复劳动：`opensOnEnter`（帮助栏列不列 Enter）与 `Update` 的
 // Enter 分支是同一个决定的两处写法，漂移了没有别的测试会红
 // （症状只是"帮助栏写了一个按了没反应的键"）。Tab 同理。
 //
+// **必须走遍每一行**：第一版只在 cursor=0 上比对，而 `metaModel` 的第 0 条
+// （general.file_type）恰好跳得动 —— 判据退回成栏目级（"这一栏有条目就列
+// Enter"）时它照样绿，1..9 那些跳不动的行上印的假话一条都没被看见
+// （实测旧实现：第 1 条 custom.key_001 帮助栏列 Enter、按下去没动作）。
+// 所以 fixture 要同时有可跳与不可跳的行，且每一行都要真的把光标移过去。
+//
 // 空元数据的模型也走一遍：它是唯一"栏目在、但没有可选项"的情况。
-func TestModelView_帮助与行为逐栏一致(t *testing.T) {
+func TestModelView_帮助与行为逐行一致(t *testing.T) {
+	// 三类行都要有：①值释义（file_type，可跳）②键释义（按后缀命中的
+	// block_count，可跳）③查不到的（不可跳）—— 只放一类的话，
+	// "逐行判定"与"栏目级判定"在 fixture 上恰好等价，测不出区别。
+	withRefs := metaModel(10)
+	withRefs.Metadata = append(withRefs.Metadata,
+		model.MetaKV{Key: "qwen2.block_count", Value: "30", Raw: uint32(30)})
+
 	empty := &model.Model{Path: "/x/m.safetensors", Format: model.FormatSafeTensors, FileSize: 1 << 10}
 	empty.Tensors = []*model.Tensor{{Name: "w", Dtype: model.DtypeF32, ByteSize: 4, ParamCount: 1}}
 
 	for _, tc := range []struct {
 		name string
 		m    *model.Model
-	}{{"有元数据", metaModel(10)}, {"空元数据", empty}} {
+	}{{"有元数据", withRefs}, {"空元数据", empty}} {
 		for sec := section(0); int(sec) < len(sections); sec++ {
+			// 元数据栏逐行走（0..n-1）；其余栏目没有"行"这个概念，走一次
+			rows := 1
+			if sec == sectionMetadata {
+				rows = max(len(tc.m.Metadata), 1)
+			}
 			v := gotoSection(NewModelView(tc.m), sec)
-			help := strings.Join(v.Help(), " ")
+			if sec == sectionMetadata && len(tc.m.Metadata) > 0 {
+				// 先 Tab 进右栏，↓ 才走"行"；否则 ↓ 切的是栏目
+				v2, _ := v.Update(key("tab"))
+				v = v2.(ModelView)
+			}
+			for row := 0; row < rows; row++ {
+				if v.metaCursor != row {
+					t.Fatalf("%s·%s：想验第 %d 行，光标却停在 %d —— 这条测试没走到那一行",
+						tc.name, sections[sec], row, v.metaCursor)
+				}
+				name := fmt.Sprintf("%s·%s·第 %d 行", tc.name, sections[sec], row)
+				assertHelpMatchesAction(t, name, v)
+				if row == rows-1 {
+					break
+				}
+				v2, _ := v.Update(key("down"))
+				v = v2.(ModelView)
+			}
+		}
+	}
+}
 
-			_, cmd := v.Update(key("enter"))
-			acts := false
-			if cmd != nil {
-				_, acts = cmd().(pushMsg)
-			}
-			if got := strings.Contains(help, keyEnter); got != acts {
-				t.Errorf("%s·%s：帮助栏列 Enter=%v，按下去有动作=%v —— help=%q",
-					tc.name, sections[sec], got, acts, help)
-			}
+// assertHelpMatchesAction 断言一个 ModelView 的帮助栏与按键的实际效果一致。
+//
+// Enter 与 Tab 两处都是"帮助栏列不列"与"按下去动不动"的比对 ——
+// 抽出来是因为逐行那条测试要对每一行调一次，两个测试再各抄一遍的话，
+// 将来加一个键就得在两处同步改。
+func assertHelpMatchesAction(t *testing.T, name string, v ModelView) {
+	t.Helper()
+	help := strings.Join(v.Help(), " ")
 
-			v2, _ := v.Update(key("tab"))
-			moved := v2.(ModelView).focus != v.focus
-			if got := strings.Contains(help, keyTab); got != moved {
-				t.Errorf("%s·%s：帮助栏列 %s=%v，按下去焦点动了=%v —— help=%q",
-					tc.name, sections[sec], keyTab, got, moved, help)
-			}
+	_, cmd := v.Update(key("enter"))
+	acts := false
+	if cmd != nil {
+		_, acts = cmd().(pushMsg)
+	}
+	if got := strings.Contains(help, keyEnter); got != acts {
+		t.Errorf("%s：帮助栏列 Enter=%v，按下去有动作=%v —— help=%q",
+			name, got, acts, help)
+	}
+
+	v2, _ := v.Update(key("tab"))
+	moved := v2.(ModelView).focus != v.focus
+	if got := strings.Contains(help, keyTab); got != moved {
+		t.Errorf("%s：帮助栏列 %s=%v，按下去焦点动了=%v —— help=%q",
+			name, keyTab, got, moved, help)
+	}
+}
+
+// **载入中（m == nil）时帮助栏与实际行为也要一致。**
+//
+// 根视图每一帧都调 Help()，而 Update 开头那句 `v.m == nil` 早退让所有
+// Enter 都不做任何事 —— 这时帮助栏列着 Enter 就是同一类假话。
+// "张量"/"速查表"两栏尤其明显：它们的判据与元数据不同，条目数根本
+// 还没得判，所以 `opensOnEnter` 里那个 `v.m != nil` 是单独的一格。
+//
+// 这条与"逐行一致"合起来覆盖 ModelView 的全部状态：
+// 后者管"有模型、光标停在哪一行"，这条管"模型还没回来"。
+func TestModelView_载入中帮助与行为一致(t *testing.T) {
+	for sec := section(0); int(sec) < len(sections); sec++ {
+		v := gotoSection(NewModelViewFromPath("/x/m.gguf", "m"), sec)
+		assertHelpMatchesAction(t, "载入中·"+sections[sec], v)
+
+		// 反面对照：解析完成后，"张量"/"速查表"两栏要真的列出 Enter ——
+		// 少了的话上面那条断言只是"两边都空"，什么也没验到。
+		// （元数据栏的行级比对在"逐行一致"那条里，概览与量化分布本来就没有）
+		if sec != sectionTensors && sec != sectionRef {
+			continue
+		}
+		loaded := gotoSection(loadModelView(metaModel(10)), sec)
+		if help := strings.Join(loaded.Help(), " "); !strings.Contains(help, keyEnter) {
+			t.Errorf("解析完成后·%s：帮助栏少了 %s: %q", sections[sec], keyEnter, help)
 		}
 	}
 }

@@ -239,7 +239,7 @@ func (v TensorsView) updateFiltering(msg tea.KeyMsg) (View, tea.Cmd) {
 //
 // 按名字/类型/段筛出空列表、或者模型压根没有张量时，Enter 什么都不做；
 // 帮助栏那时还列"Enter 详情"就是在骗用户按（与 `ModelView.opensOnEnter`
-// 由 `hasBodyCursor` 派生同一条规矩）。
+// 按当前状态判定是同一条规矩）。
 func (v TensorsView) canOpen() bool { return len(v.shown()) > 0 }
 
 func (v TensorsView) Help() []string {

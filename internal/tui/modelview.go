@@ -233,15 +233,17 @@ func (v ModelView) move(delta int) ModelView {
 
 // metaJumpEntry 返回**光标当前那一行**能跳到的条目（跳不过去时 false）。
 //
-// 三个边界都收在这里，Update 里那条分支才能平铺成一句话：
+// 四个边界都收在这里，Update 里那条分支才能平铺成一句话：
+//   - 模型还没解析出来（m == nil）：Update 的 Enter 分支有早退，
+//     但 opensOnEnter 会在那之前走到这里 —— 少这一句就是一次
+//     nil 解引用 panic（帮助栏每一帧都渲染）
 //   - 栏目不是元数据（这一栏的 Enter 是别的动作）
 //   - 元数据为空（safetensors 可以没有 __metadata__ 段）：光标压在 0 上
 //     而一条都没有，直接取下标就是越界 panic
 //   - 这一行没有关联：跳不过去
-//
-// 只在 Update 的 `v.m == nil` 早退之后调用（那时才保证 m 不是 nil）。
 func (v ModelView) metaJumpEntry() (ref.Entry, bool) {
-	if section(v.cursor) != sectionMetadata || v.metaCursor >= len(v.m.Metadata) {
+	if v.m == nil || section(v.cursor) != sectionMetadata ||
+		v.metaCursor >= len(v.m.Metadata) {
 		return ref.Entry{}, false
 	}
 	return v.metaEntry(v.m.Metadata[v.metaCursor])
@@ -272,23 +274,40 @@ func (v ModelView) metaEntry(kv model.MetaKV) (ref.Entry, bool) {
 // **"有动作"不等于"会推入子视图"**：元数据栏的 Enter 是跳到速查表的
 // 条目（见 Update 里那条分支），它同样要在帮助栏里出现。
 //
-// 元数据栏要有可跳的行才算有动作 —— 空的一栏按 Enter 什么也不发生，
-// 列了就是"骗用户按"（与 hasBodyCursor 同一个条件，不是巧合：
-// 没有右栏光标的那一栏，也就没有"当前这一行"可跳）。
+// 元数据栏的判据是**光标当前那一行跳不跳得动**，不是"这一栏有没有条目"：
+// 同一栏里 general.file_type 跳得动、它下面那些 custom.* 一条都跳不动，
+// 而光标一往下走，"这一栏有条目"就与"这一行跳得动"分道扬镳 ——
+// 从栏目级条件（曾经是 `hasBodyCursor`）派生的话，光标停在哪一行
+// 帮助栏就在哪一行印假话（实测 metaModel：10 条里 9 条如此；
+// safetensors 的 __metadata__ 更彻底，每一条都跳不动却每一帧都列 Enter）。
+// 所以这里直接问 `metaJumpEntry` —— **与 Update 的 Enter 分支同一个函数**，
+// 两处不可能漂移。
+//
+// 张量与速查表两栏要 `v.m != nil`：载入中（"正在解析…"）时 Update 开头
+// 那句早退让 Enter 什么都不做，这时列"Enter 打开"是同一类假话 ——
+// 而"正在解析"那几秒里用户恰好最容易按着不动。
 func (v ModelView) opensOnEnter() bool {
-	return v.hasBodyCursor() ||
-		section(v.cursor) == sectionTensors || section(v.cursor) == sectionRef
+	switch section(v.cursor) {
+	case sectionMetadata:
+		_, ok := v.metaJumpEntry()
+		return ok
+	case sectionTensors, sectionRef:
+		return v.m != nil
+	}
+	return false
 }
 
 func (v ModelView) Help() []string {
 	if v.focus == focusBody {
-		return []string{
-			keyUp + " " + keyDown + " 选择",
-			keyEnter + " 查速查表",
-			keyTab + " 回到栏目",
-			keyEsc + " 返回",
-			keyQuit + " 退出",
+		// **右栏焦点下的 Enter 也要走 opensOnEnter**：原先把"Enter 查速查表"
+		// 写死在这一支里，于是光标往下走到某条 custom.*（跳不动）时，
+		// 屏幕上那句"Enter 查速查表"照样在 —— 用户按下去的反馈是"什么都没发生"。
+		// 左栏那一支本就按同一个判据列，两支分头判断才会出现这种一只眼。
+		bindings := []string{keyUp + " " + keyDown + " 选择"}
+		if v.opensOnEnter() {
+			bindings = append(bindings, keyEnter+" 查速查表")
 		}
+		return append(bindings, keyTab+" 回到栏目", keyEsc+" 返回", keyQuit+" 退出")
 	}
 	bindings := []string{keyUp + " " + keyDown + " 切换栏目"}
 	if v.hasBodyCursor() {
