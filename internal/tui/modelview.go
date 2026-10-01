@@ -215,7 +215,7 @@ func (v ModelView) body(width, height int) string {
 	case sectionTensors:
 		return v.tensors()
 	case sectionQuantDist:
-		return v.quantDist()
+		return quantDistText(v.m)
 	default:
 		return v.refHint()
 	}
@@ -443,15 +443,6 @@ func (s tensorSummary) dtypeLine() string {
 		parts = append(parts, fmt.Sprintf("%s ×%d", dc.d, dc.n))
 	}
 	return strings.Join(parts, "  ")
-}
-
-// quantDist 是 ④b-2 的内容。
-//
-// **明写"还没做"而不是留空白面板**：空白会让用户以为是加载失败，
-// 而"还没做"至少是诚实的。左栏仍然列出这几项 ——
-// 导航结构现在就定下来，④b-2 只填内容、不用再动骨架。
-func (v ModelView) quantDist() string {
-	return styleHint.Render("量化分布在计划 ④b-2 里实现")
 }
 
 // refHint 是"速查表"那一栏的占位。

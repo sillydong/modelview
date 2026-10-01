@@ -36,6 +36,17 @@ bubbletea 的运行时。实测被这条路径漏掉过的 bug：`Library.Init` 
    所以 `--send` 会把按键**逐个写**（`\x1b[A` 这类序列算一次），
    这样 `--send 'jjjj'` 才是"按 4 下 j"。
 
+## 屏幕模型的两条边界（判读屏幕时要知道）
+
+1. **驱动不替应用补任何东西**：屏幕上没有的字，就是 pty 收到的字节里没有。
+   实测过一次误判 —— "文件声明那行收尾的 `]` 不见了"看起来像驱动丢字符，
+   实际是**应用自己**的 truncateLines 按终端宽度切掉的：原始字节里
+   `（MOSTLY_Q4_K_M）` 后面直接就是 `\r\n`，把同一批字节重放一遍，
+   得到的是同一个屏幕。判"应用是不是截了一行"要看**字节**，不是看屏幕。
+2. **写到第 80 列本身不换行**：字符落在最后一列就留在那一行上，
+   既不丢也不挪（有测试钉着）。超出宽度的字符会被丢弃、不折行 ——
+   而 bubbletea 自己会把每行截到终端宽度，所以只有本来就超宽的帧会碰到。
+
 ## 退出码
 
 0 = 全部断言通过；1 = 有断言不符（stderr 里写明第几步、期望什么、
@@ -91,6 +102,32 @@ def split_keys(s: str) -> list[str]:
     return _KEYSEQ.findall(s)
 
 
+# 一个**完整**的转义序列（与 _TOKEN 的前几个分支同形，但没有"任意字符"兜底）。
+# 用来判断末尾那个 \x1b 开头的序列是不是还没收全。
+_SEQ_COMPLETE = re.compile(
+    r"\x1b\[[0-9;?]*[a-zA-Z]"
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|\x1b[()][AB0]|\x1b[>=]"
+)
+
+
+def incomplete_escape(text: str) -> int | None:
+    """返回 text 末尾那个**没收全**的转义序列的起点；没有则 None。
+
+    **一次 read 的边界可以把一个转义序列切成两半**：pty 的读长度由内核
+    决定，不由对端的一次 write 决定。剩下那半若按可见字符处理，
+    `\\x1b[3;38;5;244m` 就会在屏幕上留下字面量 `[3;38;5;244m` ——
+    实测那一行因此右移 16 列、结尾被顶出屏幕，**凭空造出一次截断**。
+    """
+    i = text.rfind("\x1b")
+    if i < 0:
+        return None
+    # 起点能匹配出一个完整序列的，就是完整的（后面还有可见字符也照常处理）
+    if _SEQ_COMPLETE.match(text, i):
+        return None
+    return i
+
+
 class Screen:
     """最小 vt100 子集：只实现 bubbletea 真的会发的那几个序列。
 
@@ -102,9 +139,20 @@ class Screen:
         self.w, self.h = width, height
         self.grid = [[" "] * width for _ in range(height)]
         self.row = self.col = 0
+        # 跨 read 的碎片：转义序列与多字节 UTF-8 都可能被切成两半
+        self._pending = ""
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     def feed(self, data: bytes) -> None:
-        text = data.decode("utf-8", "replace")
+        # **碎片必须留到下一轮再解析**（见 incomplete_escape 的说明）：
+        # UTF-8 交给增量解码器（它自己会留住不完整的码点），
+        # 转义序列自己留 —— 按可见字符处理的话，屏幕上会多出一串
+        # 转义码的字面量，把那一行挤右、甚至把结尾顶出屏幕。
+        text = self._pending + self._decoder.decode(data)
+        self._pending = ""
+        cut = incomplete_escape(text)
+        if cut is not None:
+            self._pending, text = text[cut:], text[:cut]
         for m in _TOKEN.finditer(text):
             if m.group(2):  # CSI：group(2) 是终止字母
                 self._csi(m.group(1), m.group(2))
