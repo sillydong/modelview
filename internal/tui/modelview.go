@@ -126,6 +126,8 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 			switch section(v.cursor) {
 			case sectionTensors:
 				return v, pushCmd(NewTensorsView(v.m))
+			case sectionRef:
+				return v, pushCmd(NewRefView(v.m))
 			}
 		}
 	}
@@ -140,7 +142,7 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 // 加多了的表现是"帮助栏写了一个按了没反应的键"（用户被指到死路）。
 // 后者更糟，所以默认返回 false。
 func (v ModelView) opensOnEnter() bool {
-	return section(v.cursor) == sectionTensors
+	return section(v.cursor) == sectionTensors || section(v.cursor) == sectionRef
 }
 
 func (v ModelView) Help() []string {
@@ -445,13 +447,19 @@ func (s tensorSummary) dtypeLine() string {
 	return strings.Join(parts, "  ")
 }
 
-// refHint 是"速查表"那一栏的占位。
+// refHint 是"速查表"栏的右栏内容。
 //
-// **不能写"按 ? 打开速查表"** —— 那是在指一条按了没反应的路
-// （代码里没有任何 `?` 的处理，实测按 ? 前后两帧完全相同）。
-// 照 tensors/quantDist 的写法明说还没做，至少是诚实的。
+// 与张量栏同一个道理：249 条是一份要翻的列表，塞在右栏里
+// 既窄又要和左栏抢按键，所以进子视图。
 func (v ModelView) refHint() string {
-	return styleHint.Render("速查表在计划 ④b-2 里实现")
+	var sb strings.Builder
+	sb.WriteString(styleSection.Render("速查表") + "\n\n")
+	for _, tb := range ref.Tables() {
+		fmt.Fprintf(&sb, "  %-24s %3d 条\n", tb.Title, len(tb.Entries))
+	}
+	sb.WriteString(styleHint.Render(fmt.Sprintf(
+		"\n按 %s 打开（可跨表搜索）", keyEnter)) + "\n")
+	return sb.String()
 }
 
 // joinHorizontal 把左栏与右栏拼起来，右栏各行对齐到左栏右侧。

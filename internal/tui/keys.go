@@ -12,6 +12,7 @@ const (
 	keyEnter     = "Enter"
 	keyFilter    = "/"
 	keyBackspace = "Backspace"
+	keyTab       = "Tab"
 	keyRescan    = "r"
 	keyQuit      = "q"
 	keyHelp      = "?"
