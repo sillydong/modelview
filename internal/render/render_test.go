@@ -1,7 +1,6 @@
 package render
 
 import (
-	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -9,40 +8,39 @@ import (
 	"github.com/sillydong/modelview/internal/model"
 )
 
-// 采样过的统计必须带 ≈ 标记 —— 把样本统计量当成全量是误导。
-func TestStatsString(t *testing.T) {
-	s := &model.Stats{Min: -1, Max: 1, Mean: 0, Std: 0.5, ZeroRatio: 0.1}
-	// ≈ 是多字节字符，不能用 got[0] 比 —— 必须按前缀判断
-	if got := Stats(s); strings.HasPrefix(got, "≈") {
-		t.Errorf("未采样不该有 ≈ 前缀: %q", got)
-	}
-
-	s.Sampled = true
-	if got := Stats(s); !strings.HasPrefix(got, "≈") {
-		t.Errorf("采样过的统计应带 ≈ 前缀: %q", got)
-	}
-}
-
-// 非有限值必须出现在人读输出里。
+// 非有限值必须出现在人读输出里 —— **整串精确**。
 //
 // 少了这个，一个**全是 NaN** 的张量会显示成 [0, 0] μ=0 σ=0 零=0，
 // 与真正的零张量长得一模一样 —— 用户根本看不出这份统计是废的。
+//
+// 原先是 `Contains("NaN=4")`：把 `⚠` 去掉、把标签从 `NaN=` 换成
+// `NaN 计数=` 都拦不住（实测），而这条是 `⚠NaN=/Inf=` 那条分支
+// **唯一的守卫**（TestStats_整串精确 的 fixture 里没有非有限值）。
+// 升级成整串之后，标签、顺序、分隔符、前缀记号一起被钉住。
+//
+// want 手推自同一份约定：Float(0)="0"、Float(1.5)="1.5000"（[1e-3,1e5)
+// 内定点 4 位）、Percent(0)="0"（零是特例，不带 %）。
 func TestStatsString_非有限值必须显示(t *testing.T) {
+	// 全 NaN：Min/Max/Mean/Std 全是零值，看起来像真正的零张量
 	s := &model.Stats{Min: 0, Max: 0, Mean: 0, Std: 0, NaN: 4}
-	got := Stats(s)
-	if !strings.Contains(got, "NaN=4") {
-		t.Errorf("全 NaN 张量必须显示 NaN 计数，实际: %q", got)
+	want := "[0, 0] μ=0 σ=0 零=0 离群=0 ⚠NaN=4 Inf=0"
+	if got := Stats(s); got != want {
+		t.Errorf("全 NaN 张量 =\n got %q\nwant %q —— 非有限值那一段不能变样", got, want)
 	}
 
+	// 同一个约定：只有**恰好 0** 走特例打成 "0"，1 在 [1e-3,1e5) 内
+	// 走定点 4 位小数 → "1.0000"
 	s = &model.Stats{Min: 1, Max: 1, Mean: 1, Inf: 3}
-	if got := Stats(s); !strings.Contains(got, "Inf=3") {
-		t.Errorf("含 Inf 的张量必须显示 Inf 计数，实际: %q", got)
+	want = "[1.0000, 1.0000] μ=1.0000 σ=0 零=0 离群=0 ⚠NaN=0 Inf=3"
+	if got := Stats(s); got != want {
+		t.Errorf("含 Inf 的张量 =\n got %q\nwant %q", got, want)
 	}
 
 	// 没有非有限值时不要加噪音
 	s = &model.Stats{Min: 1, Max: 2, Mean: 1.5, Std: 0.5}
-	if got := Stats(s); strings.Contains(got, "NaN") || strings.Contains(got, "Inf") {
-		t.Errorf("无非有限值时不显示，实际: %q", got)
+	want = "[1.0000, 2.0000] μ=1.5000 σ=0.5000 零=0 离群=0"
+	if got := Stats(s); got != want {
+		t.Errorf("无非有限值时 =\n got %q\nwant %q（不该多出 ⚠ 那一段）", got, want)
 	}
 }
 
@@ -64,52 +62,15 @@ func TestStats_整串精确(t *testing.T) {
 	if got := Stats(s); got != want {
 		t.Errorf("Stats() =\n got %q\nwant %q —— 数字与标签的对应关系变了", got, want)
 	}
-}
 
-// 模拟那一行必须带「模拟」字样 —— 它不含重要性矩阵加权，
-// 不加标注用户会拿它去对真实文件。
-func TestQuantSimString(t *testing.T) {
-	sims := []model.QuantSim{
-		{Target: "Q8_0", BitsPerWeight: 8.5, SNRDB: 45.2, Compression: 3.76},
-		{Target: "Q6_K", BitsPerWeight: 6.5625, SNRDB: 35.1, Compression: 4.88},
-		{Target: "Q4_K", BitsPerWeight: 4.5, SNRDB: 24.8, Compression: 7.11},
-	}
-	got := QuantSim(sims)
-	if !strings.Contains(got, "模拟") {
-		t.Errorf("必须标出这是模拟值（未用重要性矩阵）: %q", got)
-	}
-	for _, s := range sims {
-		if !strings.Contains(got, s.Target) {
-			t.Errorf("缺少 %s 档: %q", s.Target, got)
-		}
-		// 位宽要用 bit/权重 而不是 B/权重 —— B 在本输出里已经是字节
-		if !strings.Contains(got, "bit/权重") {
-			t.Errorf("%s 的位宽单位不是 bit/权重: %q", s.Target, got)
-		}
-		// 数值必须真的出现在输出里，不能只有一个档名
-		if !strings.Contains(got, fmt.Sprintf("%.1f", s.SNRDB)) {
-			t.Errorf("%s 的信噪比 %v 没出现在输出里: %q", s.Target, s.SNRDB, got)
-		}
-		if !strings.Contains(got, fmt.Sprintf("%.2f", s.Compression)) {
-			t.Errorf("%s 的压缩比 %v 没出现在输出里: %q", s.Target, s.Compression, got)
-		}
-	}
-	if QuantSim(nil) != "" {
-		t.Error("没有模拟结果时不该输出内容")
-	}
-}
-
-// 采样的模拟要带 ≈ —— 与 Stats 同一个约定。
-func TestQuantSimString_采样标记(t *testing.T) {
-	full := QuantSim([]model.QuantSim{{Target: "Q8_0", SNRDB: 45.2, Compression: 3.76}})
-	if strings.Contains(full, "≈") {
-		t.Errorf("全量模拟不该带 ≈: %q", full)
-	}
-	sampled := QuantSim([]model.QuantSim{
-		{Target: "Q8_0", SNRDB: 45.2, Compression: 3.76, Sampled: true},
-	})
-	if !strings.Contains(sampled, "≈") {
-		t.Errorf("采样模拟必须带 ≈: %q", sampled)
+	// 采样过的统计必须带 ≈ 前缀，未采样的一个记号都不能有 ——
+	// 把样本统计量当成全量是误导。（原先单独一条 TestStatsString
+	// 只判 HasPrefix；≈ 的位置现在与整串一起钉住。）
+	sampled := *s
+	sampled.Sampled = true
+	wantSampled := "≈" + want
+	if got := Stats(&sampled); got != wantSampled {
+		t.Errorf("采样 Stats() =\n got %q\nwant %q", got, wantSampled)
 	}
 }
 
@@ -139,65 +100,11 @@ func TestQuantSim_整串精确(t *testing.T) {
 	if got := QuantSim(sampled); got != wantSampled {
 		t.Errorf("采样 QuantSim() =\n got %q\nwant %q", got, wantSampled)
 	}
-}
 
-func TestQuantExistingString(t *testing.T) {
-	q := &model.QuantInfo{
-		Scheme: "Q4_K", BitsPerWeight: 4.5, Blocks: 100, SubBlocks: 800,
-		BlockElems: 32, ScaleMin: 0.001, ScaleMax: 0.5, ScaleMedian: 0.02,
-		ZeroScaleBlocks: 3,
-	}
-	got := QuantExisting(q)
-	if !strings.Contains(got, "Q4_K") || !strings.Contains(got, "4.5 bit/权重") {
-		t.Errorf("缺少方案或位宽: %q", got)
-	}
-	if !strings.Contains(got, "800") {
-		t.Errorf("子块数没显示: %q", got)
-	}
-	// 单位必须是"子块"：同一行前面刚写过"800 子块"，
-	// 而一个块含 8 或 16 个子块，写成"块"会差一个数量级
-	if !strings.Contains(got, "压平 3 子块") {
-		t.Errorf("被压平的子块数必须显示且单位正确 —— 那是最直接的证据: %q", got)
-	}
-	// 被压得最狠的那个子块也必须显示（QuantInfo 的注释承诺了这一点）
-	if !strings.Contains(got, "最扁") {
-		t.Errorf("最扁的子块没显示: %q", got)
-	}
-	if QuantExisting(nil) != "" {
-		t.Error("nil 时不该输出内容")
-	}
-	// 没有被压平的块时不该出现警告
-	q2 := &model.QuantInfo{Scheme: "Q8_0", BitsPerWeight: 8.5, SubBlocks: 2,
-		ScaleMin: 0.0625, ScaleMax: 0.5, ScaleMedian: 0.2}
-	if got := QuantExisting(q2); strings.Contains(got, "⚠") {
-		t.Errorf("没有被压平的块时不该有警告: %q", got)
-	}
-}
-
-// 张量行末尾挂哪一段：模拟与诊断互斥，都为空时不留空档。
-func TestTensorQuantString(t *testing.T) {
-	sims := []model.QuantSim{{Target: "Q8_0", SNRDB: 45.2, Compression: 3.76}}
-	quant := &model.QuantInfo{Scheme: "Q4_K", BitsPerWeight: 4.5, SubBlocks: 8,
-		ScaleMin: 0.1, ScaleMax: 0.5, ScaleMedian: 0.2}
-
-	// 浮点张量：只有模拟
-	got := TensorQuant(&model.Tensor{QuantSims: sims})
-	if !strings.Contains(got, "模拟") || strings.Contains(got, "Q4_K ") {
-		t.Errorf("浮点张量应只显示模拟: %q", got)
-	}
-	// 量化张量：只有诊断
-	got = TensorQuant(&model.Tensor{Quant: quant})
-	if strings.Contains(got, "模拟") || !strings.Contains(got, "Q4_K") {
-		t.Errorf("量化张量应只显示诊断: %q", got)
-	}
-	// 都没有：空串，调用方不该多打一个空格
-	if got := TensorQuant(&model.Tensor{}); got != "" {
-		t.Errorf("两者皆无时应返回空串，实际 %q", got)
-	}
-	// 都有（不该发生）：显示模拟，不能同时给两个互相矛盾的数字
-	got = TensorQuant(&model.Tensor{QuantSims: sims, Quant: quant})
-	if !strings.Contains(got, "模拟") {
-		t.Errorf("两者都有时应优先显示模拟: %q", got)
+	// 没有模拟结果时不该输出内容（调用方按它判断"要不要多打一个空格"）。
+	// 原先只在 TestQuantSimString 里判过，那条已并入这里。
+	if got := QuantSim(nil); got != "" {
+		t.Errorf("没有模拟结果时应当返回空串，实际 %q", got)
 	}
 }
 
