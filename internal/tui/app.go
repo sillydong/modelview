@@ -90,6 +90,20 @@ func pushCmd(v View) tea.Cmd {
 // 它只该说"我想深入这一项"，栈怎么变是根 Model 的事。
 type pushMsg struct{ v View }
 
+// popToMsg 请求根视图一直弹栈，直到栈顶是一个 ModelView，
+// 然后把 msg 交给它。
+//
+// **"弹到 ModelView"而不是"弹 N 层"**：EntryView 可能来自
+// ModelView → EntryView（从元数据跳进来，1 层），
+// 也可能来自 ModelView → RefView → EntryView → EntryView
+// （SeeAlso 里连跳几次，3 层）。让调用方写层数的话，
+// 它必须自己数清楚，而数错的表现是弹到不相干的地方或者压根没弹 ——
+// 两种都不报错，只是"跳转没反应"。
+//
+// 栈里没有 ModelView 时（不该发生，但状态机的东西不假设）
+// 弹到只剩栈底，把消息交过去 —— 不认识的视图会忽略它。
+type popToMsg struct{ msg tea.Msg }
+
 // Model 是根模型。
 type Model struct {
 	stack  []View
@@ -162,6 +176,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// **新压进来的视图也要跑它的 Init** ——
 		// 不跑的话"进模型视图"会永远停在"正在解析…"
 		return m, msg.v.Init()
+
+	case popToMsg:
+		for len(m.stack) > 1 {
+			if _, ok := m.stack[len(m.stack)-1].(ModelView); ok {
+				break
+			}
+			m.stack = m.stack[:len(m.stack)-1]
+		}
+		return m.forward(msg.msg)
 
 	}
 	return m.forward(msg)

@@ -471,3 +471,34 @@ func TestModelView_解析未完成时Enter不推子视图(t *testing.T) {
 		t.Fatalf("解析完成后 Enter 返回的不是 pushMsg: %T", cmd())
 	}
 }
+
+// **进速查表时也要把模型带过去**（`NewRefView(v.m)` 而不是 `nil`）。
+//
+// 速查表是"模型 → 条目"这条链的上半段：它带的 m 会一直传到条目页，
+// 而条目页的"在本模型中"读的就是那个 m。传 nil 的话从那以后的每一条
+// 都少一节，且不报错（`occurrences()` 对 nil 的契约就是返回 nil）——
+// 实测：把 `v.m` 改成 `nil`，原有测试一条都不红。
+//
+// 与 `TestRefView_Enter进入条目` 是同一条链上的两段，各看着一个传参点。
+func TestModelView_进速查表时把模型带过去(t *testing.T) {
+	v := gotoSection(loadModelView(fakeModel()), sectionRef)
+	_, cmd := v.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("速查表栏 Enter 没有推入子视图")
+	}
+	msg, ok := cmd().(pushMsg)
+	if !ok {
+		t.Fatalf("返回的不是 pushMsg: %T", cmd())
+	}
+	rv, ok := msg.v.(RefView)
+	if !ok {
+		t.Fatalf("推入的不是 RefView: %T", msg.v)
+	}
+	if rv.m == nil {
+		t.Fatal("推入的速查表没有带模型 —— 从它进去的条目页" +
+			"「在本模型中」会是空的")
+	}
+	if rv.m != v.m {
+		t.Errorf("带过去的不是当前这个模型：%p, want %p", rv.m, v.m)
+	}
+}

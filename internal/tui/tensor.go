@@ -11,6 +11,7 @@ import (
 	"github.com/sillydong/modelview/internal/analyze"
 	"github.com/sillydong/modelview/internal/humanize"
 	"github.com/sillydong/modelview/internal/model"
+	"github.com/sillydong/modelview/internal/ref"
 	"github.com/sillydong/modelview/internal/render"
 )
 
@@ -59,6 +60,33 @@ type TensorView struct {
 	scanning bool
 	elapsed  time.Duration
 	err      error
+
+	segCursor int
+}
+
+// tensorSegment 是张量名里的一个段，附带它对应的速查表条目。
+type tensorSegment struct {
+	seg string
+	e   ref.Entry
+}
+
+// segments 列出名字里**能查到速查表条目**的那些段。
+//
+// 只列查得到的：把 "weight" 这种谁都认识的段也列上去的话，
+// 用户真正关心的那个（`attn_q_norm` 那种）会被淹在里面。
+// 查不到的段不是"错了"，只是这张表还没收录它 —— 不显示不等于不存在。
+//
+// 归一（"#12" → "#N"）交给 ref.LookupTensorSegment，**不在这里自己写**：
+// 那段逻辑曾经只存在于测试文件里，于是生产路径上永远查不到带层号的段
+// （ref 包里 normalizeLayer 的原话）。
+func (v TensorView) segments() []tensorSegment {
+	var out []tensorSegment
+	for _, s := range ref.SplitTensorName(v.tn.Name) {
+		if e, ok := ref.LookupTensorSegment(s); ok {
+			out = append(out, tensorSegment{seg: s, e: e})
+		}
+	}
+	return out
 }
 
 func NewTensorView(m *model.Model, tn *model.Tensor) TensorView {
@@ -133,11 +161,38 @@ func (v TensorView) Update(msg tea.Msg) (View, tea.Cmd) {
 		}
 		v.elapsed += tickInterval
 		return v, v.tick()
+
+	case tea.KeyMsg:
+		segs := v.segments()
+		switch msg.String() {
+		case "up", "k":
+			if v.segCursor > 0 {
+				v.segCursor--
+			}
+		case "down", "j":
+			if v.segCursor < len(segs)-1 {
+				v.segCursor++
+			}
+		case "enter":
+			// **必须判 `v.segCursor < len(segs)`**：名字里一个段都查不到时
+			// `len(segs) == 0`，不判就是下标越界 panic
+			if v.segCursor < len(segs) {
+				return v, pushCmd(NewEntryView(v.m, segs[v.segCursor].e))
+			}
+		}
 	}
 	return v, nil
 }
 
 func (v TensorView) Help() []string {
+	if len(v.segments()) > 0 {
+		return []string{
+			keyUp + " " + keyDown + " 选择名字里的段",
+			keyEnter + " 查速查表",
+			keyEsc + " 返回",
+			keyQuit + " 退出",
+		}
+	}
 	return []string{keyEsc + " 返回", keyQuit + " 退出"}
 }
 
@@ -161,6 +216,22 @@ func (v TensorView) View(width, height int) string {
 	fmt.Fprintf(&sb, "占用     %s\n", humanize.Bytes(v.tn.ByteSize))
 	if !v.tn.OffsetUnknown {
 		fmt.Fprintf(&sb, "偏移     %#x\n", v.tn.Offset)
+	}
+
+	// **"名字构成"在扫描前后都在**：它只看名字，与扫描结果无关 ——
+	// 放在 scanning 那一段之后的话，扫描中的几秒里这一节会消失、
+	// 扫完又冒出来，用户会以为是自己看错了
+	if segs := v.segments(); len(segs) > 0 {
+		sb.WriteString("\n" + styleSection.Render("名字构成") + "\n")
+		for i, s := range segs {
+			line := fmt.Sprintf("  %-16s %s", s.seg, s.e.Title)
+			if i == v.segCursor {
+				sb.WriteString(styleSelected.Render("▸ "+fmt.Sprintf("%-16s %s", s.seg, s.e.Title)) + "\n")
+				continue
+			}
+			sb.WriteString(line + "\n")
+		}
+		sb.WriteString(styleHint.Render(fmt.Sprintf("  按 %s 查这一段", keyEnter)) + "\n")
 	}
 
 	// **扫描中绝不读 tn 的统计字段**：那条 goroutine 正在算，

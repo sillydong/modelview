@@ -337,3 +337,101 @@ func TestTensorView_窄终端不超宽且不丢关键信息(t *testing.T) {
 		t.Errorf("表头位宽不是精确值 —— 是不是走了 humanize.Float（4.5 会变成 4.5000）:\n%s", out)
 	}
 }
+
+// segIndex 找出名字里那一段在 segments() 里的下标。
+//
+// **不能假设它在第 0 位**：名字是 "blk.0.<seg>.weight"，
+// 而 "blk" 本身也是速查表里的一条 —— 它一定排在前面。
+func segIndex(segs []tensorSegment, seg string) int {
+	for i, s := range segs {
+		if s.seg == seg {
+			return i
+		}
+	}
+	return -1
+}
+
+// 张量名分段：↑↓ 选段、Enter 跳到那一段对应的速查表条目。
+func TestTensorView_名字分段可跳转(t *testing.T) {
+	seg := realSegments(t, 1)[0]
+	m, _ := fakeTensor("blk.0." + seg + ".weight")
+	v := NewTensorView(m, m.Tensors[0])
+
+	segs := v.segments()
+	i := segIndex(segs, seg)
+	if i < 0 {
+		t.Fatalf("名字 blk.0.%s.weight 里没查到 %q —— 分段跳转是死的", seg, seg)
+	}
+	v.segCursor = i
+
+	_, cmd := v.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("Enter 没有返回命令")
+	}
+	msg, ok := cmd().(pushMsg)
+	if !ok {
+		t.Fatalf("返回的是 %T, want pushMsg", cmd())
+	}
+	ev, ok := msg.v.(EntryView)
+	if !ok {
+		t.Fatalf("推入的是 %T, want EntryView", msg.v)
+	}
+	if ev.e.ID != "tensor:"+seg {
+		t.Errorf("推入的是 %q, want %q", ev.e.ID, "tensor:"+seg)
+	}
+}
+
+// ↑↓ 能在分段之间移动，且**不会越界**。
+func TestTensorView_分段光标不越界(t *testing.T) {
+	seg := realSegments(t, 1)[0]
+	m, _ := fakeTensor("blk.0." + seg + ".weight")
+	v := NewTensorView(m, m.Tensors[0])
+	n := len(v.segments())
+	if n < 2 {
+		t.Fatalf("这个测试需要至少 2 个能查到的段，实际 %d 个", n)
+	}
+
+	v.segCursor = 0
+	next, _ := v.Update(key("up"))
+	if next.(TensorView).segCursor != 0 {
+		t.Error("在最上面按 ↑ 越界了")
+	}
+	next, _ = v.Update(key("down"))
+	if next.(TensorView).segCursor != 1 {
+		t.Error("↓ 没有移动光标")
+	}
+	v.segCursor = n - 1
+	next, _ = v.Update(key("down"))
+	if next.(TensorView).segCursor != n-1 {
+		t.Errorf("在最下面按 ↓ 越界到 %d", next.(TensorView).segCursor)
+	}
+}
+
+// 一个段都查不到时 Enter 不能崩（越界）。
+func TestTensorView_无分段时Enter不崩(t *testing.T) {
+	m, _ := fakeTensor("zzz.yyy.xxx")
+	v := NewTensorView(m, m.Tensors[0])
+	if len(v.segments()) != 0 {
+		t.Fatal("测试前提不成立：这个名字应当一个段都查不到")
+	}
+	if _, cmd := v.Update(key("enter")); cmd != nil {
+		t.Errorf("没有分段却返回了命令: %v", cmd)
+	}
+	if _, cmd := v.Update(key("down")); cmd != nil {
+		t.Errorf("没有分段时 ↓ 返回了命令: %v", cmd)
+	}
+}
+
+// 扫描中和扫描后，名字分段都在 —— 它只看名字，与扫描无关。
+func TestTensorView_分段不受扫描影响(t *testing.T) {
+	seg := realSegments(t, 1)[0]
+	m, tn := fakeTensor("blk.0." + seg + ".weight")
+	v := NewTensorView(m, tn)
+	if !strings.Contains(v.View(100, 30), "名字构成") {
+		t.Fatal("扫描中不显示名字分段")
+	}
+	next, _ := v.Update(tensorScannedMsg{name: tn.Name, stats: &model.Stats{Count: 1}})
+	if !strings.Contains(next.(TensorView).View(100, 30), "名字构成") {
+		t.Error("扫描完成后名字分段消失了")
+	}
+}

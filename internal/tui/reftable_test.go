@@ -207,8 +207,16 @@ func TestRefView_搜索态是模态的(t *testing.T) {
 }
 
 // Enter 推入条目详情，带的是**当前选中**的那一条。
+//
+// **模型也要跟着进条目页**（`NewEntryView(v.m, …)` 而不是 `nil`）：
+// 条目页的"在本模型中"读的就是 `EntryView.m`，传 nil 的那一支是
+// "不知道"而不是"没有"—— 表现只是那一节整段不见，界面上不报错。
+//
+// 这里原先用的是 `NewRefView(nil)`，**两边都是 nil，测不出差别**：
+// 实测把 `v.m` 改成 `nil`、整包跑测试一条都不红。所以这个测试要用
+// 一个真模型，并且断言带过去的正是它。
 func TestRefView_Enter进入条目(t *testing.T) {
-	v := NewRefView(nil)
+	v := NewRefView(fakeModel())
 	v2, _ := v.Update(key("tab"))
 	v = v2.(RefView)
 	v2, _ = v.Update(key("down"))
@@ -229,6 +237,13 @@ func TestRefView_Enter进入条目(t *testing.T) {
 	}
 	if ev.e.ID != want.ID {
 		t.Errorf("推入的是 %q, want %q", ev.e.ID, want.ID)
+	}
+	if ev.m == nil {
+		t.Fatal("推入的条目页没有带模型 —— " +
+			"「在本模型中」那一节会是空的（跳得进去、跳不出来）")
+	}
+	if ev.m != v.m {
+		t.Errorf("带过去的不是当前这个模型：%p, want %p", ev.m, v.m)
 	}
 }
 

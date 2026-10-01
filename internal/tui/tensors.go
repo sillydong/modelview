@@ -22,14 +22,42 @@ type TensorsView struct {
 
 	filtering bool   // 正在输入过滤词
 	filter    string // 当前过滤词（空表示不过滤）
+
+	// dtype 非空时只显示这个类型的张量。
+	//
+	// 与 filter **互相独立**（不是二选一）：从"量化分布"跳过来时
+	// 是按类型筛，而用户在列表里还能再按名字筛一遍，
+	// 两个条件同时生效才符合直觉。
+	dtype model.Dtype
 }
 
 func NewTensorsView(m *model.Model) TensorsView {
 	return TensorsView{m: m}
 }
 
+// NewTensorsViewDtype 造一个只显示某个类型的张量列表。
+//
+// 与 NewTensorsView 分开而不是加参数：绝大多数调用点是"看全部"，
+// 多加一个参数会让每个调用点都要想一下"这里该传什么类型"。
+// 两个构造函数的差别恰好就是这里要说的事。
+func NewTensorsViewDtype(m *model.Model, d model.Dtype) TensorsView {
+	return TensorsView{m: m, dtype: d}
+}
+
+// NewTensorsViewName 造一个只显示名字里含关键词的张量列表。
+func NewTensorsViewName(m *model.Model, keyword string) TensorsView {
+	return TensorsView{m: m, filter: keyword}
+}
+
 func (v TensorsView) Title() string {
-	if v.filter != "" {
+	switch {
+	case v.dtype != "" && v.filter != "":
+		return fmt.Sprintf("张量 · %s · %s + %q（%d 个）",
+			baseName(v.m.Path), v.dtype, v.filter, len(v.shown()))
+	case v.dtype != "":
+		return fmt.Sprintf("张量 · %s · %s（%d 个）",
+			baseName(v.m.Path), v.dtype, len(v.shown()))
+	case v.filter != "":
 		return fmt.Sprintf("张量 · %s（过滤：%s）", baseName(v.m.Path), v.filter)
 	}
 	return fmt.Sprintf("张量 · %s（共 %d 个）", baseName(v.m.Path), len(v.m.Tensors))
@@ -57,17 +85,25 @@ func (v TensorsView) Modal() bool { return v.filtering }
 // "这个张量扫过没有"，那是会变的）。每次现算的代价是 O(n) 次字符串比较，
 // 434 个张量下可以忽略。
 func (v TensorsView) shown() []int {
-	if v.filter == "" {
+	match := func(tn *model.Tensor) bool {
+		if v.dtype != "" && tn.Dtype != v.dtype {
+			return false
+		}
+		return v.filter == "" || strings.Contains(strings.ToLower(tn.Name), strings.ToLower(v.filter))
+	}
+	// **快路径的条件是"两个都没筛"，`v.filter == ""` 单独一个不够**：
+	// 只判 filter 的话，按 dtype 筛会走这条捷径直接返回全部 ——
+	// 列表显示全部，而用户以为自己筛过了。
+	if v.filter == "" && v.dtype == "" {
 		idx := make([]int, len(v.m.Tensors))
 		for i := range idx {
 			idx[i] = i
 		}
 		return idx
 	}
-	kw := strings.ToLower(v.filter)
 	var idx []int
 	for i, tn := range v.m.Tensors {
-		if strings.Contains(strings.ToLower(tn.Name), kw) {
+		if match(tn) {
 			idx = append(idx, i)
 		}
 	}
@@ -188,6 +224,12 @@ func (v TensorsView) View(width, height int) string {
 				"没有匹配 %q 的张量（共 %d 个）。按 %s 取消过滤",
 				v.filter, len(v.m.Tensors), keyEsc))
 		}
+		// 按类型筛出来的空列表**不能说"这个模型没有张量"** ——
+		// 模型里有没有张量，与有没有这个类型的张量是两回事
+		if v.dtype != "" {
+			return styleHint.Render(fmt.Sprintf("没有 %s 类型的张量（共 %d 个）",
+				v.dtype, len(v.m.Tensors)))
+		}
 		return styleHint.Render("这个模型没有张量")
 	}
 
@@ -205,6 +247,13 @@ func (v TensorsView) View(width, height int) string {
 	case v.filtering:
 		head = fmt.Sprintf("过滤：%s▏  匹配 %d/%d",
 			v.filter, len(idx), len(v.m.Tensors))
+	case v.dtype != "" && v.filter != "":
+		// **两个筛同时生效时两个都要写出来**：只写一个的话，
+		// 用户看到的条数与他知道的那个筛不符，会以为工具算错了
+		head = fmt.Sprintf("类型 %s · 过滤 %q：%d/%d（%s 删字，%s 返回）",
+			v.dtype, v.filter, len(idx), len(v.m.Tensors), keyBackspace, keyEsc)
+	case v.dtype != "":
+		head = fmt.Sprintf("类型 %s：%d/%d", v.dtype, len(idx), len(v.m.Tensors))
 	case v.filter != "":
 		head = fmt.Sprintf("过滤 %q：%d/%d（%s 删字，%s 返回）",
 			v.filter, len(idx), len(v.m.Tensors), keyBackspace, keyEsc)

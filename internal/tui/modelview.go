@@ -109,6 +109,17 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 		v.m, v.err = msg.m, msg.err
 		return v, nil
 
+	case selectMetaMsg:
+		// **越界就整个丢弃**：从速查表跳回来时，模型理论上没变，
+		// 但"理论上"不是保证 —— 越界索引会在下一帧 panic
+		if msg.index < 0 || msg.index >= len(v.m.Metadata) {
+			return v, nil
+		}
+		v.cursor = int(sectionMetadata)
+		v.focus = focusBody
+		v.metaCursor = msg.index
+		return v, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab":

@@ -35,9 +35,8 @@ type entryTarget struct {
 type EntryView struct {
 	e ref.Entry
 
-	// m 是当前模型 —— Task 8 只存不读，**Task 10 的 occurrences() 才是消费者**。
-	// 现在留着它是为了让 `NewEntryView(m, e)` 的签名在 Task 10 不用改，
-	// 从而不必回头改 Task 7/8 的全部调用点。
+	// m 是当前模型，**occurrences() 是它的消费者**（"在本模型中"那一节）。
+	// 为 nil 时那一节整段不显示：没有模型上下文时的事实是"不知道"。
 	m *model.Model
 
 	targets []entryTarget
@@ -49,6 +48,9 @@ type EntryView struct {
 // 但环会让"打开那一页"栈溢出。守卫在 internal/ref 的 TestSeeAlso_无环。
 func NewEntryView(m *model.Model, e ref.Entry) EntryView {
 	v := EntryView{m: m, e: e}
+	// **"在本模型中"排在前面**：用户查一条规范，最想知道的是
+	// "它在我这个模型里是哪一行"，而 SeeAlso 是"还想知道什么"
+	v.targets = append(v.targets, occurrences(m, e)...)
 	for _, id := range e.SeeAlso {
 		t := entryTarget{group: "相关条目", label: id}
 		if target, ok := ref.ByID(id); ok {
