@@ -438,11 +438,16 @@ func TestModelView_元数据为空不崩(t *testing.T) {
 // Enter 分支是同一个决定的两处写法，漂移了没有别的测试会红
 // （症状只是"帮助栏写了一个按了没反应的键"）。Tab 同理。
 //
-// **必须走遍每一行**：第一版只在 cursor=0 上比对，而 `metaModel` 的第 0 条
-// （general.file_type）恰好跳得动 —— 判据退回成栏目级（"这一栏有条目就列
-// Enter"）时它照样绿，1..9 那些跳不动的行上印的假话一条都没被看见
-// （实测旧实现：第 1 条 custom.key_001 帮助栏列 Enter、按下去没动作）。
-// 所以 fixture 要同时有可跳与不可跳的行，且每一行都要真的把光标移过去。
+// **必须走遍每一行，而且两个焦点态都要走**：第一版只在 cursor=0 上比对，
+// 而 `metaModel` 的第 0 条（general.file_type）恰好跳得动 —— 判据退回成
+// 栏目级（"这一栏有条目就列 Enter"）时它照样绿，1..9 那些跳不动的行上印的
+// 假话一条都没被看见（实测旧实现：第 1 条 custom.key_001 帮助栏列 Enter、
+// 按下去没动作）。
+//
+// 焦点态也是**变异验证补出来的缺口**：只在右栏焦点下逐行比对的话，
+// `Help()` 左栏那一支的判据被退回成 `hasBodyCursor` 时没有任何一行会红
+// （第 0 行两种判据都为真，1..9 行根本没在左栏焦点下比过）。
+// 所以每一行都在左栏、右栏各断言一次。
 //
 // 空元数据的模型也走一遍：它是唯一"栏目在、但没有可选项"的情况。
 func TestModelView_帮助与行为逐行一致(t *testing.T) {
@@ -467,23 +472,32 @@ func TestModelView_帮助与行为逐行一致(t *testing.T) {
 				rows = max(len(tc.m.Metadata), 1)
 			}
 			v := gotoSection(NewModelView(tc.m), sec)
-			if sec == sectionMetadata && len(tc.m.Metadata) > 0 {
-				// 先 Tab 进右栏，↓ 才走"行"；否则 ↓ 切的是栏目
-				v2, _ := v.Update(key("tab"))
-				v = v2.(ModelView)
-			}
+			// 有内容可选的元数据栏才有右栏焦点可切（空元数据栏 Tab 无效）
+			canTab := sec == sectionMetadata && len(tc.m.Metadata) > 0
 			for row := 0; row < rows; row++ {
 				if v.metaCursor != row {
 					t.Fatalf("%s·%s：想验第 %d 行，光标却停在 %d —— 这条测试没走到那一行",
 						tc.name, sections[sec], row, v.metaCursor)
 				}
 				name := fmt.Sprintf("%s·%s·第 %d 行", tc.name, sections[sec], row)
-				assertHelpMatchesAction(t, name, v)
+				// 左栏焦点（这一支列的是"Enter 打开"）
+				assertHelpMatchesAction(t, name+"·左栏", v)
+				if !canTab {
+					break
+				}
+				// 右栏焦点（这一支列的是"Enter 查速查表"）
+				v2, _ := v.Update(key("tab"))
+				v = v2.(ModelView)
+				assertHelpMatchesAction(t, name+"·右栏", v)
 				if row == rows-1 {
 					break
 				}
-				v2, _ := v.Update(key("down"))
-				v = v2.(ModelView)
+				// ↓ 必须在右栏焦点下按（那时它才走"行"）；走完切回左栏，
+				// 下一轮才从"左栏焦点"开始比
+				v3, _ := v.Update(key("down"))
+				v = v3.(ModelView)
+				v4, _ := v.Update(key("tab"))
+				v = v4.(ModelView)
 			}
 		}
 	}
