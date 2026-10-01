@@ -95,6 +95,10 @@ func NewTensorView(m *model.Model, tn *model.Tensor) TensorView {
 		// **扫描状态在构造时定，不在 Init 里定**：Init 是值接收者，
 		// 改不了字段 —— 在它里面写 v.scanning = true 是改一个马上被丢掉的副本，
 		// 界面会永远停在"没有扫描中"的那一版（这个错误静默且致命）。
+		//
+		// 判据直接用 analyze.NeedsWork：这一栏要答的是"点开这个张量
+		// 还要不要等"，与 analyze.Analyze/One 的入口闸门是同一个问题。
+		//（"什么时候该重扫"那三处表达的差异见 NeedsWork 的说明。）
 		scanning: analyze.NeedsWork(tn),
 	}
 }

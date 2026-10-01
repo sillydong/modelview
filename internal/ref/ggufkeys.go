@@ -290,10 +290,10 @@ func lookupKey(key string) (keyEntry, bool, bool) {
 // 现在的做法：照列，但把上游的移除原因写在 note 里，
 // 读起来是"这个编号已废弃"而不是"这是一种现役量化档"。
 //
-// **注意目前还没有任何非测试代码调 FileTypeByCode**（`internal/ref` 的
-// 第一个真实消费者是计划 ④b 的 TUI）。所以"用户现在能看到解释了"
-// 这件事目前只能被测试证明，还不能被观察验证 —— 上面说的是
-// "为展示层准备好了"，不是"已经修好了用户看得到"。
+// **现在有真实消费者了**：TUI 的元数据栏经 `tui.fileTypeEntry` 调它 ——
+// `general.file_type` 那一行会渲染出 `[档位名]` 加一个跳转记号 `◂`，
+// 按 Enter 还能进这个条目的详情页。所以上面说的"列出来才有解释"
+// 不再是"为展示层准备好了"，而是一条走得到的路。
 var fileTypeValues = []struct {
 	code    uint32
 	enum    string

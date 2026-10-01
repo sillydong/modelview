@@ -429,8 +429,8 @@ func (v ModelView) warnings() string {
 // 关联是**现算**的（拿 key 调 ref.LookupKey），不是解析时写死字段 ——
 // 写死的那种一旦速查表换了 ID 就全体指空，而且已经在 --json 里对外过一遍。
 //
-// ④b-1 里这一栏还没有内容光标，靠一句"还有 N 条没显示"顶着；
-// 这里补上真正的滚动（那句提示也一并删掉 —— 滚动做了之后它就是假的）。
+// ④b-1 里这一栏还没有内容光标，靠一句"还有 N 条没显示"顶着 ——
+// 那句提示在滚动做出来之后就删了：滚动做了之后它就是一句假话。
 func (v ModelView) metadata(height int) string {
 	var sb strings.Builder
 	sb.WriteString(styleSection.Render(fmt.Sprintf("元数据（%d 条）", len(v.m.Metadata))) + "\n\n")

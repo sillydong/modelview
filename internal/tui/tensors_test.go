@@ -436,3 +436,31 @@ func TestTensorsView_空结果帮助栏不列Enter(t *testing.T) {
 		t.Error("有张量时按 Enter 没动作")
 	}
 }
+
+// **宽度为 0 时不能崩** —— `humanize.Truncate` 对负数会切片越界 panic。
+//
+// 与 `TestRefView_窄终端不崩` 那条不同，这里**不需要修**，先把可达性判清楚：
+//   - 宽度直接来自终端（`Model.width` 只由 tea.WindowSizeMsg 写），而
+//     bubbletea 在 Unix 上取自 TIOCGWINSZ 的 uint16 字段（x/term 的
+//     getSize），**不可能是负数**；本视图也不像 RefView 那样自己算
+//     `width − 左栏 − 1`，没有减法就造不出负宽度。
+//   - 0 是真可达的（pty 报 0×0，drive_tui 的文件头就写着默认 winsize 是 0×0），
+//     而 `Truncate(s, 0)` 是 `s[:0]`，本来就安全。
+//
+// 实测探针（这里是它的文档化）：宽 −1 → `slice bounds out of range [:-1]`；
+// 宽 0/1/2/3/4/10/16/17 全部正常（头部按宽度截成 ""/"张"/"张量..."）。
+// 留这条是把"0 安全"钉住：哪天有人在这里做减法（比如给名字列让宽度），
+// 0 就会变成负数，这条会立刻红。
+func TestTensorsView_窄终端不崩(t *testing.T) {
+	for _, w := range []int{0, 1, 10, 17} {
+		out := newTensors(fakeModelWithTensors(3)).View(w, 24)
+		// 列表本身不按宽度截断（超宽那部分交给根视图），所以每一档都该在
+		if !strings.Contains(out, "blk.0.attn_q") {
+			t.Errorf("宽度 %d：第一行没渲染出来:\n%s", w, out)
+		}
+	}
+	// 头部按宽度截断，但装得下的时候必须是完整的
+	if out := newTensors(fakeModelWithTensors(3)).View(17, 24); !strings.Contains(out, "张量（3/3）") {
+		t.Errorf("宽度 17：头部没渲染完整:\n%s", out)
+	}
+}

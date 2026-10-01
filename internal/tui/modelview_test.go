@@ -159,7 +159,11 @@ func TestModelView_标题(t *testing.T) {
 	}
 }
 
-// 帮助栏不能列还没做的键（张量详情/速查表在 ④b-2）。
+// 帮助栏不能列**没有处理分支**的键。
+//
+// 张量详情与速查表都已经接上了（各自有子视图，见 TensorsView / RefView），
+// 剩下的反例是 `?`：根视图里没有那条全局分支，
+// 速查表是从"速查表"栏目按 Enter 进的。
 func TestModelView_帮助栏只列支持的键(t *testing.T) {
 	v := loadModelView(fakeModel())
 	help := strings.Join(v.Help(), " ")
@@ -168,9 +172,8 @@ func TestModelView_帮助栏只列支持的键(t *testing.T) {
 			t.Errorf("帮助栏少了 %s: %q", want, help)
 		}
 	}
-	// 速查表视图在 ④b-2；现在按 ? 应该给出"还没做"的说明而不是没反应
 	if strings.Contains(help, keyHelp) {
-		t.Errorf("速查表还没做，帮助栏不该列 %s: %q", keyHelp, help)
+		t.Errorf("`?` 没有处理分支，帮助栏不该列 %s: %q", keyHelp, help)
 	}
 }
 
@@ -275,7 +278,7 @@ func TestModelView_通用关联标记(t *testing.T) {
 }
 
 // **一个键最多一个记号**：两个一模一样的 ◂ 指向两个不同的条目，
-// ④b-2 接 Enter 跳转时"跳哪一个"没有答案。
+// 按 Enter 跳转时"跳哪一个"就没有答案。
 func TestModelView_一个键只有一个记号(t *testing.T) {
 	v := gotoSection(loadModelView(fakeModel()), sectionMetadata)
 	for _, l := range strings.Split(v.View(140, 40), "\n") {
