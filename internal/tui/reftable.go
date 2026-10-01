@@ -57,13 +57,25 @@ func (v RefView) Title() string {
 			v.search, len(v.entries()))
 	}
 	return fmt.Sprintf("modelview · 速查表 · %s（%d 条）",
-		v.tables[v.tableCursor].Title, len(v.entries()))
+		v.table().Title, len(v.entries()))
 }
 
 func (v RefView) Init() tea.Cmd { return nil }
 
 // Modal 让搜索输入能拿到 q（见 TensorsView.Modal 的说明）。
 func (v RefView) Modal() bool { return v.searching }
+
+// table 返回当前选中的那张表；`tables` 为空时返回零值。
+//
+// **越界判据只有这一处**：原先 entries() 挡了、Title() 直接下标 ——
+// 同一个前提（tables 可能为空）被两个读者读出两个结论，
+// 而只有一个是对的（另一个真为空时 panic）。
+func (v RefView) table() ref.Table {
+	if v.tableCursor < 0 || v.tableCursor >= len(v.tables) {
+		return ref.Table{}
+	}
+	return v.tables[v.tableCursor]
+}
 
 // entries 返回当前该显示的条目。
 //
@@ -74,10 +86,7 @@ func (v RefView) entries() []ref.Entry {
 	if v.search != "" {
 		return ref.Find(v.search)
 	}
-	if v.tableCursor < 0 || v.tableCursor >= len(v.tables) {
-		return nil
-	}
-	return v.tables[v.tableCursor].Entries
+	return v.table().Entries
 }
 
 func (v RefView) Update(msg tea.Msg) (View, tea.Cmd) {
@@ -213,7 +222,12 @@ func (v RefView) Help() []string {
 
 func (v RefView) View(width, height int) string {
 	nav, navWidth := v.nav(height)
-	body := v.body(width-navWidth-1, height)
+	// **右栏宽度夹到 0 以上**：终端比左栏还窄时 `width-navWidth-1` 是负数，
+	// 而搜索态那行会把它交给 humanize.Truncate —— 那个函数对负数是
+	// `s[:cut]` 切片越界 panic，不是空串（实测：宽 0/1/10 三档全 panic）。
+	// 0 宽在真终端里可达：窗口拖到 17 列以下，或 pty 报 0×0
+	//（drive_tui 的文件头就写着默认 winsize 是 0×0）。
+	body := v.body(max(width-navWidth-1, 0), height)
 	return joinHorizontal(nav, body)
 }
 

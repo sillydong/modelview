@@ -247,6 +247,44 @@ func TestRefView_表为空不崩(t *testing.T) {
 	v2.(RefView).Update(key("enter"))
 }
 
+// 表列表整个为空时 `Title()` 也不能崩。
+//
+// 它与 `entries()` 必须用**同一处**越界判据：原先 entries() 挡了、
+// Title() 直接下标 —— 同一个前提被两个读者读出两个结论，
+// 而真为空时只有一个是对的（另一个 panic）。
+// `Title()` 由根视图的标题栏调用，panic 就是整屏崩掉。
+func TestRefView_表列表为空不崩(t *testing.T) {
+	v := NewRefView(nil)
+	v.tables = nil
+	if out := v.View(120, 20); out == "" {
+		t.Error("表列表为空时什么都没渲染")
+	}
+	if title := v.Title(); title == "" {
+		t.Error("表列表为空时标题是空的")
+	}
+}
+
+// **终端比左栏还窄时不能 panic。**
+//
+// 右栏宽度 = width − 左栏宽 − 1，窄到负数时搜索态那行会把它交给
+// humanize.Truncate —— 那个函数对负数是 `s[:cut]` 切片越界 panic。
+// 实测（修之前）：宽 0/1/10 三档全 panic，宽 17 起才正常。
+// 这在真终端里可达：窗口拖到 17 列以下，或 pty 报 0×0
+// （drive_tui 的文件头就写着 pty 默认 winsize 是 0×0）。
+func TestRefView_窄终端不崩(t *testing.T) {
+	v := NewRefView(nil)
+	v2, _ := v.Update(key("/"))
+	v = v2.(RefView)
+	for _, w := range []int{0, 1, 10, 17} {
+		out := v.View(w, 24)
+		// 左栏还在（搜索态下它塌成一行"搜索结果"；
+		// 窄到 0 列时它自己也超宽，那是根视图截断的事）
+		if !strings.Contains(out, "搜索结果") {
+			t.Errorf("宽度 %d：左栏没渲染出来:\n%s", w, out)
+		}
+	}
+}
+
 // **空格必须能进搜索词，判据是 `len(msg.Runes) > 0` 而不是 `msg.Type == tea.KeyRunes`。**
 //
 // bubbletea v1.3.10 把单独一个空格设成 `Type: KeySpace`，但 `Runes` 仍然是

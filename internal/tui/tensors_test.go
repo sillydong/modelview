@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,17 +42,95 @@ func TestTensorsView_列出全部(t *testing.T) {
 }
 
 // **选中项必须始终可见** —— 与模型库视图同一条要求。
+//
+// **每一步都走、一直走到最后一项，而且换几个高度**：原先只走 60 步、
+// 只用高 20 一个尺寸，正好绕开了边界 —— "窗口取满 + 提示行再砍一行"
+// 只在光标贴到列表末尾时才发生（实测：120 个张量、光标在最后一个、
+// 高 20，屏幕上根本看不到选中的那条，而这条测试当时是全绿的）。
 func TestTensorsView_选中项始终可见(t *testing.T) {
-	v := newTensors(fakeModelWithTensors(100))
-	for range 60 {
-		v2, _ := v.Update(key("down"))
-		v = v2.(TensorsView)
-		out := v.View(120, 20)
-		want := fmt.Sprintf("blk.%d.attn_q.weight", v.cursor)
-		if !strings.Contains(out, want) {
-			t.Fatalf("光标在第 %d 项，屏幕上看不到 %s:\n%s", v.cursor, want, out)
+	for _, h := range []int{6, 20, 24} {
+		v := newTensors(fakeModelWithTensors(100))
+		last := len(v.m.Tensors) - 1
+		for range last + 1 {
+			out := v.View(120, h)
+			want := fmt.Sprintf("blk.%d.attn_q.weight", v.cursor)
+			if !strings.Contains(out, want) {
+				t.Fatalf("高度 %d：光标在第 %d 项，屏幕上看不到 %s:\n%s",
+					h, v.cursor, want, out)
+			}
+			v2, _ := v.Update(key("down"))
+			v = v2.(TensorsView)
+		}
+		// 正对照：上面那个循环必须真的走到了最后一项，
+		// 否则"每一步都可见"是空转的（走两步就退出也满足它）
+		if v.cursor != last {
+			t.Fatalf("高度 %d：光标停在第 %d 项，没走到最后一项 %d", h, v.cursor, last)
 		}
 	}
+}
+
+// **提示里那句"显示第 N–M 个"必须与屏幕上真的显示的一致。**
+//
+// 实测过的旧版：120 个张量、光标在最后一项、高 20 —— 屏幕上显示
+// 101–118，提示却写"显示第 102–120 个"（它按截断**前**的窗口算）。
+// 屏幕上印一句假话，比不印更糟。
+//
+// 这条不能靠"包含某段文字"来验：要从渲染结果里**数出**实际显示了哪些行。
+func TestTensorsView_提示的范围与实际显示一致(t *testing.T) {
+	v := newTensors(fakeModelWithTensors(120))
+	for range len(v.m.Tensors) - 1 {
+		v2, _ := v.Update(key("down"))
+		v = v2.(TensorsView)
+	}
+	if v.cursor != len(v.m.Tensors)-1 {
+		t.Fatalf("光标在第 %d 项，没走到最后一项", v.cursor)
+	}
+
+	for _, h := range []int{6, 20, 24} {
+		out := v.View(120, h)
+
+		// 屏幕上真的出现了哪些张量：**按行与名字比对**，不靠提示的措辞
+		shown := map[int]bool{}
+		for i, tn := range v.m.Tensors {
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(line, tn.Name) {
+					shown[i] = true
+				}
+			}
+		}
+		if len(shown) == 0 {
+			t.Fatalf("高度 %d：一个张量都没渲染出来，这条测试无从谈起:\n%s", h, out)
+		}
+
+		// 提示里报的范围（1 基，闭区间）
+		m := footerRange.FindStringSubmatch(out)
+		if m == nil {
+			t.Fatalf("高度 %d：列表没显示完，却没有「…显示第 N–M 个」那一行:\n%s", h, out)
+		}
+		lo, hi := atoi(t, m[1]), atoi(t, m[2])
+
+		for i := range v.m.Tensors {
+			inFooter := i >= lo-1 && i <= hi-1
+			if shown[i] != inFooter {
+				t.Errorf("高度 %d：第 %d 个张量%s屏幕上出现，提示却说%s"+
+					"（提示写的是第 %d–%d 个，屏幕上共 %d 行张量）:\n%s",
+					h, i, map[bool]string{true: "", false: "没"}[shown[i]],
+					map[bool]string{true: "在范围内", false: "不在范围内"}[inFooter],
+					lo, hi, len(shown), out)
+			}
+		}
+	}
+}
+
+var footerRange = regexp.MustCompile(`…显示第 (\d+)–(\d+) 个，共 (\d+) 个`)
+
+func atoi(t *testing.T, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatalf("提示里的数字 %q 解析不了: %v", s, err)
+	}
+	return n
 }
 
 // 视图交给根视图的原始输出不能超过高度 —— 超了会被 padTo 截掉真实内容。
