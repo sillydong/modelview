@@ -536,6 +536,66 @@ func TestLibrary_目录警告要显示关键半句(t *testing.T) {
 	}
 }
 
+// emptyLibraryWithWarnings 造一个"空库 + 有孤儿 + 有未完成下载 + 有目录警告"的视图。
+//
+// 这不是硬凑的边角场景：**一个模型都没扫到、但磁盘上并不干净**恰恰是
+// 孤儿 blob 与未完成下载最容易出现的组合（模型目录配错、权限不对时，
+// items 扫不到而 blobs 照样列得出来），而这两条提示是全工具仅有的
+// 会引导破坏性操作的话。
+func emptyLibraryWithWarnings() Library {
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{
+			InProgress: []discover.Item{{Name: "sha256-x-partial", Path: "/blobs/sha256-x-partial", Size: 1 << 30}},
+			Orphans:    []discover.Item{{Name: "sha256-orphan", Path: "/blobs/sha256-orphan", Size: 4096}},
+			Errs: []string{"/blobs 下有 1 个 manifest 读不了，孤儿 blob 检测已跳过：" +
+				"报成「可回收」可能让你删掉真实模型"},
+		}
+	}
+	lib2, _ := lib.Update(lib.Init()())
+	return lib2.(Library)
+}
+
+// **空库时安全提示同样不能消失** —— "空"是另一个方向的同一个问题。
+//
+// `notices` 的注释讲的是"提示不能因为模型**多**而消失"，
+// 而这里是"因为模型**零**而消失"：更隐蔽，因为空库看着像个干净状态，
+// 用户不会怀疑自己漏看了什么。原来的 `View` 在 `len(items)==0` 时
+// 直接 `return l.emptyView()`，把那三条提示整个跳过了。
+//
+// 断言的是**原始输出**（不经根视图，与既有的 TestLibrary_* 一致）：
+// 三条提示都在屏幕上、空库说明也在，且行数 ≤ height ——
+// 拼起来之后超出的行会被 padTo 砍掉，砍掉的正是路径清单（用户看这一屏
+// 就是为了知道去哪儿放模型）。
+func TestLibrary_空库时安全提示仍在(t *testing.T) {
+	lib := emptyLibraryWithWarnings()
+	if len(lib.items) != 0 {
+		t.Fatalf("前提不成立：这个库有 %d 个模型", len(lib.items))
+	}
+
+	for _, h := range []int{6, 8, 10, 20, 40} {
+		out := lib.View(80, h)
+		if strings.HasSuffix(out, "\n") {
+			t.Errorf("高度 %d：原始输出以换行结尾（padTo 会多算一行）:\n%q", h, out)
+		}
+		if n := len(strings.Split(out, "\n")); n > h {
+			t.Errorf("高度 %d：原始输出 %d 行 —— 超出的会被 padTo 砍掉:\n%s", h, n, out)
+		}
+		// 两条破坏性提示 + 孤儿那一行的名字（提示里列的是清单，每个孤儿一行）
+		for _, want := range []string{"未完成的下载", "孤儿 blob", "sha256-orphan",
+			"没有发现模型文件。"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("高度 %d：%q 不在屏上 —— 提示因为模型**零**而消失了:\n%s",
+					h, want, out)
+			}
+		}
+		// 目录警告会按宽度折行，按词匹配会跨行漏掉 —— 先拼回一行再找
+		if flat := strings.Join(strings.Fields(out), ""); !strings.Contains(flat, "可能让你删掉真实模型") {
+			t.Errorf("高度 %d：目录警告的关键半句不见了:\n%s", h, out)
+		}
+	}
+}
+
 func itemNames(items []discover.Item) []string {
 	out := make([]string, len(items))
 	for i, it := range items {

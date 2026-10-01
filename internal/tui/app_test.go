@@ -467,9 +467,16 @@ func allViews() []namedView {
 	m2 := fakeModel()
 	m2.Tensors = append(m2.Tensors, done)
 
+	// "空库 + 安全提示"是**空库那一段与 notices 拼起来**的分支：两条
+	// 都在，且顺序是提示在前、说明在后。`res.Errs` 本身**仍不是独立分支**
+	//（它永远不是末行：后面要么跟列表、要么跟空库说明），但这一档的
+	// fixture 里带了 Errs，顺带把 wrapText 那条折行路径也纳进跨视图守卫。
+	warnLib := emptyLibraryWithWarnings()
+
 	return []namedView{
 		{"Library", lib},
 		{"Library/空库", emptyLib},
+		{"Library/空库+安全提示", warnLib},
 		// **"正在扫描"那一档不跑 Init 是有意的**：跑它就会真的去 stat
 		// 本机的模型目录，这个守卫的结论会随开发机上装了什么而变
 		//（Library 的字段注释里记过同一条）。View 本身不碰 I/O。

@@ -177,9 +177,6 @@ func (l Library) View(width, height int) string {
 	if !l.loaded {
 		return styleHint.Render("正在扫描模型目录…")
 	}
-	if len(l.items) == 0 {
-		return l.emptyView()
-	}
 
 	var sb strings.Builder
 
@@ -190,11 +187,24 @@ func (l Library) View(width, height int) string {
 	// 的提示（照着删会毁掉用户正在下的模型），它恰恰不能因为
 	// 模型多就消失。实测：30 个模型、80×24 的终端里，
 	// 原先把提示放在列表之后时它完全不可见。
+	//
+	// **空库也要走这一段**（所以这里不再有 `len(items)==0` 的早退）：
+	// 那是同一件事的**另一个方向** —— 提示不能因为模型**多**而消失，
+	// 同样不能因为模型**零**而消失。而且零这一头更隐蔽：空库看着像个
+	// 干净状态，用户不会怀疑自己漏看了什么（孤儿 blob 与未完成的下载
+	// 恰恰是"一个模型都没扫到、但磁盘上并不干净"时才会出现的组合）。
 	head := l.notices(width)
 	headLines := 0
 	if head != "" {
 		headLines = strings.Count(head, "\n")
 		sb.WriteString(head)
+	}
+
+	// 空库：没有列表可滚，只有一段说明 —— 它照样要接 height，
+	// 已用掉的提示行由 headLines 传进去扣（理由见 emptyView）
+	if len(l.items) == 0 {
+		sb.WriteString(l.emptyView(headLines, height))
+		return sb.String()
 	}
 
 	// 给列表留的行数：总高 − 提示 − **进度行（如果有）**。
@@ -329,24 +339,61 @@ func (l Library) row(i int, it discover.Item) string {
 	return line
 }
 
-// emptyView 是空模型库那一屏。
+// emptyView 是空模型库那一屏的**说明部分**（安全提示由 View 先拼好，
+// 用的行数从 headLines 传进来 —— 它不能在这里自己再调一次 notices：
+// 两处各拼一次的话，"空库有没有提示"就又变成两个决定）。
 //
-// **末尾去换行**（`TrimRight` 而不是 `TrimSuffix`）：每一行都以 "\n" 结尾，
-// 最后会多出一个 —— 而 padTo 是按 "\n" 切行数出来的，那个空元素让它
-// 多算一行，内容放不下时"…还有 N 行没显示"里的 N 比实际丢掉的**多一**，
-// 内容恰好等于高度时还会白白砍掉一行。
-// 空库是**首次运行就会撞上的第一屏**（本机没装模型时），
-// 而这一支此前没人看过：跨视图的守卫 `allViews()` 用的是非空的假模型库。
-// `TrimRight` 的理由与 EntryView 那处相同：中间行都是 "\n" 结尾，
-// 末尾可能连着一个以上（这里只有一个，但不靠"只有一个"这个巧合）。
-func (l Library) emptyView() string {
-	var sb strings.Builder
-	sb.WriteString("没有发现模型文件。\n\n")
-	sb.WriteString("扫过这些目录（不存在的会被跳过）：\n")
-	for _, p := range discover.Paths() {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  %-12s %s", p.Source, p.Dir)) + "\n")
+// **它必须自己接住 height**：说明是定长的，但路径清单每条一行，
+// `discover.Paths()` 有几条就有几条 —— 目录多、终端矮时整屏放不下，
+// 超出的行会被根视图的 padTo 砍掉，砍掉的正是路径清单的尾部
+// （用户看这一屏就是为了知道去哪儿放模型）。所以按剩余行数裁剪，
+// 并留一行说"还有几行没列出来"。
+//
+// **末尾不留换行**（`joinHorizontal` 记过的那条）：留了的话 padTo 按 "\n"
+// 切会多算一行，内容放不下时"…还有 N 行没显示"里的 N 比实际丢掉的**多一**，
+// 内容恰好等于高度时还会白白砍掉一行。空库是**首次运行就会撞上的第一屏**
+// （本机没装模型时），而这一支此前没人看过：跨视图的守卫 `allViews()`
+// 用的是非空的假模型库。这里用 `strings.Join` 拼，所以末尾**构造上**
+// 不可能多出换行（原先逐行 append "\n" 再 TrimRight，靠的是裁，不是构造）。
+func (l Library) emptyView(headLines, height int) string {
+	// 这一屏自己能用的行数。**至少留 1 行**：提示本身就可能占满整个矮终端
+	//（那时 height-headLines ≤ 0），而这一屏不能什么都不说 ——
+	// 剩下的交给 padTo 兜底。它是唯一能砍到安全提示的东西，也正因如此
+	// notices 不在这里裁（"提示不能消失"是硬规矩，宁可让 padTo 留下记号）。
+	budget := height - headLines
+	if budget < 1 {
+		budget = 1
 	}
-	return strings.TrimRight(sb.String(), "\n")
+
+	head := []string{"没有发现模型文件。", "", "扫过这些目录（不存在的会被跳过）："}
+	paths := discover.Paths()
+	total := len(head) + len(paths)
+
+	lines := make([]string, 0, max(total, budget))
+	lines = append(lines, head...)
+	for _, p := range paths {
+		lines = append(lines, styleDim.Render(fmt.Sprintf("  %-12s %s", p.Source, p.Dir)))
+	}
+
+	// 放不下时**先砍路径清单、最后才砍说明**：说明是这一屏的结论
+	//（"没有发现模型文件"），路径只是"去哪儿放模型"的细节。反过来截的话，
+	// 矮终端上会剩一屏警告加一句"还有 N 行没显示"，用户不知道工具到底
+	// 扫到东西没有。提示行照例算进 budget（先留出提示行，否则被顶掉的
+	// 是真实内容）；budget 只剩 1 行时那一行给结论，隐藏的清单交给 padTo。
+	switch {
+	case total <= budget:
+		// 全放得下，什么都不用砍
+	case budget > len(head):
+		room := budget - len(head) - 1 // 给提示行让出一行
+		lines = append(lines[:len(head)+room], styleDim.Render(fmt.Sprintf(
+			"  …还有 %d 个扫描目录没列出来", len(paths)-room)))
+	case budget > 1:
+		lines = append(lines[:budget-1], styleDim.Render(fmt.Sprintf(
+			"  …还有 %d 行没显示（共 %d 个扫描目录）", total-budget+1, len(paths))))
+	default:
+		lines = lines[:budget]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func totalBytes(items []discover.Item) int64 {
