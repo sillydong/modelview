@@ -400,3 +400,39 @@ func TestTensorsView_空结果提示与按键行为一致(t *testing.T) {
 			"那提示里写「Esc 会取消过滤」也没有任何东西会红", got)
 	}
 }
+
+// **筛出空列表时帮助栏不能说"Enter 详情"** —— 一条都没有，按下去什么也不做。
+//
+// 空结果不是错误状态，是搜索/筛选的正常结局；判据与 Update 里那个
+// 是同一个（TensorsView.canOpen），所以不存在"帮助栏说能开、按下去没反应"。
+func TestTensorsView_空结果帮助栏不列Enter(t *testing.T) {
+	// 三种空法各走一遍：按名字筛空、按类型筛空、模型压根没有张量
+	cases := []struct {
+		name string
+		v    TensorsView
+	}{
+		{"按名字筛空", NewTensorsViewName(fakeModelWithTensors(3), "zzz没有这个")},
+		{"按类型筛空", NewTensorsViewDtype(fakeModelWithTensors(3), model.DtypeF32)},
+		{"模型没有张量", NewTensorsView(&model.Model{Path: "/x/m.gguf"})},
+	}
+	for _, tc := range cases {
+		if n := len(tc.v.shown()); n != 0 {
+			t.Fatalf("%s：前提不成立，shown() = %d 个", tc.name, n)
+		}
+		if help := strings.Join(tc.v.Help(), " "); strings.Contains(help, keyEnter) {
+			t.Errorf("%s：帮助栏列了 %s —— 按下去没反应: %q", tc.name, keyEnter, help)
+		}
+		if _, cmd := tc.v.Update(key("enter")); cmd != nil {
+			t.Errorf("%s：按 Enter 居然有动作 —— 帮助栏与 Update 读的不是同一个判据", tc.name)
+		}
+	}
+
+	// 正对照：有得开时两个方向都要成立
+	full := newTensors(fakeModelWithTensors(3))
+	if help := strings.Join(full.Help(), " "); !strings.Contains(help, keyEnter) {
+		t.Errorf("有张量时帮助栏少了 %s: %q", keyEnter, help)
+	}
+	if _, cmd := full.Update(key("enter")); cmd == nil {
+		t.Error("有张量时按 Enter 没动作")
+	}
+}

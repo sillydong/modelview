@@ -89,6 +89,16 @@ func (v RefView) entries() []ref.Entry {
 	return v.table().Entries
 }
 
+// canOpen 表示 Enter 现在真的有得开 —— **与 Update 里那条判断同一句**：
+// 各写一遍的话，会出现"帮助栏列了 Enter，按下去没反应"。
+//
+// 搜不到匹配是真会出现的（搜索是正常的操作，不是错误状态），
+// `entryCursor` 那一半则是因为空列表下光标没有意义。
+func (v RefView) canOpen() bool {
+	es := v.entries()
+	return len(es) > 0 && v.entryCursor < len(es)
+}
+
 func (v RefView) Update(msg tea.Msg) (View, tea.Cmd) {
 	key, isKey := msg.(tea.KeyMsg)
 	if !isKey {
@@ -114,12 +124,27 @@ func (v RefView) Update(msg tea.Msg) (View, tea.Cmd) {
 		v.focus = focusEntries
 	case "up", "k", "down", "j":
 		v = v.move(key.String())
+	case "backspace":
+		// **已确认的搜索词也要能删字** —— 与 `TensorsView` 同一条路。
+		//
+		// 两个都是"列表 + 一个过滤词"的视图：同一个键在一处能删、
+		// 在另一处静默失效，用户在一边学会的动作到另一边只会以为是自己按错了。
+		// （原先只有"按 / 回输入态再删"这一条路，而屏幕上没说这件事 ——
+		// 空结果那句提示原先只写"按 / 改搜索词"。）
+		//
+		// 删到空就是回到"当前表"那一态：右栏内容整个换了一份，
+		// 条目光标必须跟着归零 —— 停在旧下标上要么越界，要么静默指到另一条。
+		if v.search != "" {
+			v.search = v.search[:len(v.search)-1]
+			v.entryCursor = 0
+		}
 	// **没有"清搜索"的 esc 分支**：搜索态才是模态的，
 	// 确认之后的 Esc 走根视图的"弹栈"，到不了这里 ——
 	// 写了就是死代码（Task 2 修的就是同类死角）。
 	// Esc 直接返回上一层，要改搜索词按 `/`。
 	case "enter":
-		if es := v.entries(); len(es) > 0 && v.entryCursor < len(es) {
+		es := v.entries()
+		if v.canOpen() {
 			return v, pushCmd(NewEntryView(v.m, es[v.entryCursor]))
 		}
 	}
@@ -200,24 +225,18 @@ func (v RefView) Help() []string {
 	if v.searching {
 		return []string{"输入关键词", keyEnter + " 确认", keyEsc + " 取消", "Ctrl+C 退出"}
 	}
+	// 搜索态没有"切换栏" —— 左栏只有一行搜索结果
+	bindings := []string{keyUp + " " + keyDown + " 移动"}
+	if v.search == "" {
+		bindings = append(bindings, keyTab+" 切换栏")
+	}
+	if v.canOpen() {
+		bindings = append(bindings, keyEnter+" 详情")
+	}
 	if v.search != "" {
-		// 搜索态没有"切换栏" —— 左栏只有一行搜索结果
-		return []string{
-			keyUp + " " + keyDown + " 移动",
-			keyEnter + " 详情",
-			keyFilter + " 改搜索词",
-			keyEsc + " 返回",
-			keyQuit + " 退出",
-		}
+		return append(bindings, keyFilter+" 改搜索词", keyEsc+" 返回", keyQuit+" 退出")
 	}
-	return []string{
-		keyUp + " " + keyDown + " 移动",
-		keyTab + " 切换栏",
-		keyEnter + " 详情",
-		keyFilter + " 搜索",
-		keyEsc + " 返回",
-		keyQuit + " 退出",
-	}
+	return append(bindings, keyFilter+" 搜索", keyEsc+" 返回", keyQuit+" 退出")
 }
 
 func (v RefView) View(width, height int) string {
@@ -304,9 +323,12 @@ func (v RefView) entryLines(width, listCap int) string {
 			// **提示里不写"按 Esc 清搜索"** —— Esc 在这一态是"返回上一层"，
 			// 照着写的话用户按完发现回到了模型页，而搜索词也没了，
 			// 分不清是"清掉了"还是"退出去了"
+			//
+			// 两个入口都写出来（与 `TensorsView` 的空结果提示同一份措辞）：
+			// 只用 `/` 改词的话，用户得先回输入态才知道能删字
 			return styleHint.Render(fmt.Sprintf(
-				"没有匹配 %q 的条目（共 %d 条）。按 %s 改搜索词",
-				v.search, totalEntries(v.tables), keyFilter))
+				"没有匹配 %q 的条目（共 %d 条）。按 %s 删字，%s 改搜索词",
+				v.search, totalEntries(v.tables), keyBackspace, keyFilter))
 		case v.searching:
 			return styleHint.Render("输入关键词，跨全部速查表搜索")
 		default:

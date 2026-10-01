@@ -85,23 +85,31 @@ func (v EntryView) Update(msg tea.Msg) (View, tea.Cmd) {
 	case "enter":
 		// 跳不过去的目标**什么都不做**：推一张空白卡片进去，
 		// 用户只会以为是自己按错了
-		if v.cursor < len(v.targets) && v.targets[v.cursor].ok {
+		if v.canJump() {
 			return v, v.targets[v.cursor].cmd
 		}
 	}
 	return v, nil
 }
 
+// canJump 表示 Enter 现在真的有得跳 —— **与 Update 里那条判断同一句**。
+//
+// 只判 `len(targets) > 0` 不够：SeeAlso 不校验存在性（ref.Entry 的注释），
+// 一条都查不到时整页一个能跳的都没有，帮助栏那时列"Enter 跳转"
+// 就是在骗用户按。光标也要算进来 —— 跳不跳是**当前这一行**的属性。
+func (v EntryView) canJump() bool {
+	return v.cursor < len(v.targets) && v.targets[v.cursor].ok
+}
+
 func (v EntryView) Help() []string {
-	if len(v.targets) > 0 {
-		return []string{
-			keyUp + " " + keyDown + " 选择",
-			keyEnter + " 跳转",
-			keyEsc + " 返回",
-			keyQuit + " 退出",
-		}
+	if len(v.targets) == 0 {
+		return []string{keyEsc + " 返回", keyQuit + " 退出"}
 	}
-	return []string{keyEsc + " 返回", keyQuit + " 退出"}
+	bindings := []string{keyUp + " " + keyDown + " 选择"}
+	if v.canJump() {
+		bindings = append(bindings, keyEnter+" 跳转")
+	}
+	return append(bindings, keyEsc+" 返回", keyQuit+" 退出")
 }
 
 func (v EntryView) View(width, _ int) string {

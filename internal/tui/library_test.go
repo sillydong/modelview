@@ -235,16 +235,57 @@ func TestLibrary_空结果有提示(t *testing.T) {
 // 帮助栏只列**这一层真的支持**的键。
 func TestLibrary_帮助栏只列支持的键(t *testing.T) {
 	lib, _ := fakeLibrary()
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
 	help := strings.Join(lib.Help(), " ")
 	for _, want := range []string{keyUp, keyDown, keyEnter, keyRescan, keyQuit} {
 		if !strings.Contains(help, want) {
 			t.Errorf("帮助栏少了 %s: %q", want, help)
 		}
 	}
-	// **还没做的键不许列**：列了等于骗用户按。
-	// Enter（进单模型）已经接上了；?（速查表）在 ④b-2
+	// **没有处理分支的键不许列**：列了等于骗用户按。
+	// `?` 就是这样 —— 速查表是从"速查表"栏目按 Enter 进的，
+	// 根视图里没有 `?` 那条全局分支。
 	if strings.Contains(help, "?") {
-		t.Errorf("速查表还没做，帮助栏不该列 ?: %q", help)
+		t.Errorf("帮助栏列了没有处理分支的 ?: %q", help)
+	}
+}
+
+// **空库时帮助栏不能说"Enter 查看"** —— 一条模型都没有，按下去什么也不做。
+//
+// 空库是真会出现的（扫过的地方一个模型都没有），不是错误状态；
+// 还没扫完时列表也是空的，同一个判据一起挡住。
+func TestLibrary_空库帮助栏不列Enter(t *testing.T) {
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{}
+	}
+	// 还没扫完：界面显示的是"正在扫描…"，此时列 Enter 同样是骗用户按
+	if help := strings.Join(lib.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("还没扫完就列了 %s: %q", keyEnter, help)
+	}
+
+	lib2, _ := lib.Update(lib.Init()())
+	empty := lib2.(Library)
+	if len(empty.items) != 0 {
+		t.Fatalf("前提不成立：这个库有 %d 个模型", len(empty.items))
+	}
+	if help := strings.Join(empty.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("空库的帮助栏列了 %s —— 按下去没反应: %q", keyEnter, help)
+	}
+	if _, cmd := empty.Update(key("enter")); cmd != nil {
+		t.Error("空库按 Enter 居然有动作 —— 帮助栏与 Update 读的不是同一个判据")
+	}
+
+	// 正对照：有模型时两个方向都要成立（列了、而且真的能开）
+	full, _ := fakeLibrary()
+	full2, _ := full.Update(full.Init()())
+	full = full2.(Library)
+	if help := strings.Join(full.Help(), " "); !strings.Contains(help, keyEnter) {
+		t.Errorf("有模型时帮助栏少了 %s: %q", keyEnter, help)
+	}
+	if _, cmd := full.Update(key("enter")); cmd == nil {
+		t.Error("有模型时按 Enter 没动作")
 	}
 }
 

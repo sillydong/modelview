@@ -124,3 +124,60 @@ func TestEntryView_窄终端折行(t *testing.T) {
 		}
 	}
 }
+
+// **一个能跳的目标都没有时，帮助栏不能说"Enter 跳转"** —— 按下去什么也不做。
+//
+// SeeAlso 不校验存在性（ref.Entry 的注释），所以"整页都跳不过去"是可达的：
+// 作者写了笔误、或者指向一条还没写的条目。判据与 Update 里那个是同一个
+// （EntryView.canJump），所以不存在"帮助栏说能跳、按下去没反应"。
+func TestEntryView_全跳不过去时帮助栏不列Enter(t *testing.T) {
+	e := ref.Entry{ID: "a", Title: "A", SeeAlso: []string{"quant:NOT_YET"}}
+	v := NewEntryView(nil, e)
+	if len(v.targets) != 1 || v.targets[0].ok {
+		t.Fatalf("前提不成立：targets = %+v", v.targets)
+	}
+	if help := strings.Join(v.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("一条都跳不过去，帮助栏却列了 %s: %q", keyEnter, help)
+	}
+	if _, cmd := v.Update(key("enter")); cmd != nil {
+		t.Error("跳不过去却按出了动作 —— 推一张空白卡片进去，用户只会以为是自己按错了")
+	}
+}
+
+// **跳不跳是"当前这一行"的属性**，不是"这一页有没有目标"的属性。
+//
+// 一条查不到、一条查得到的页面上：光标压着第一条时帮助栏不该说 Enter 能跳
+// （按下去确实什么都不做），↓ 移过去才该出现 —— 只有把光标算进判据里，
+// 帮助栏与 Update 才是同一个结论。
+func TestEntryView_光标压着跳不过去的行时帮助栏不列Enter(t *testing.T) {
+	e := ref.Entry{ID: "a", Title: "A",
+		SeeAlso: []string{"quant:NOT_YET", "quant:Q4_K"}}
+	v := NewEntryView(nil, e)
+	if len(v.targets) != 2 || v.targets[0].ok || !v.targets[1].ok {
+		t.Fatalf("前提不成立：targets = %+v", v.targets)
+	}
+
+	if help := strings.Join(v.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("光标压着跳不过去的那一行，帮助栏却列了 %s: %q", keyEnter, help)
+	}
+	if _, cmd := v.Update(key("enter")); cmd != nil {
+		t.Error("光标压着跳不过去的那一行，按 Enter 却出了动作")
+	}
+
+	// 移到跳得动的那一条：帮助栏与行为都要跟着变
+	v2, _ := v.Update(key("down"))
+	v = v2.(EntryView)
+	if help := strings.Join(v.Help(), " "); !strings.Contains(help, keyEnter) {
+		t.Errorf("光标移到跳得动的行之后帮助栏少了 %s: %q", keyEnter, help)
+	}
+	if _, cmd := v.Update(key("enter")); cmd == nil {
+		t.Error("跳得动的行按 Enter 没动作")
+	}
+
+	// 再移回去：Enter 又该从帮助栏消失
+	v3, _ := v.Update(key("up"))
+	v = v3.(EntryView)
+	if help := strings.Join(v.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("光标移回跳不过去的行，帮助栏还列着 %s: %q", keyEnter, help)
+	}
+}

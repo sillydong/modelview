@@ -178,11 +178,11 @@ func (v TensorsView) Update(msg tea.Msg) (View, tea.Cmd) {
 			// 写了也是死代码（这一版修的就是同类死角，见 Task 2）。
 			// 清字的入口是 backspace，不是 Esc。
 		case "enter":
-			// `shown()` 返回的是**过滤后的下标**，所以 idx[cursor]
-			// 正是屏幕上选中的那一个 —— 这也正是 shown() 存下标
-			// 而不是存张量副本的理由。
-			idx := v.shown()
-			if len(idx) > 0 {
+			if v.canOpen() {
+				// `shown()` 返回的是**过滤后的下标**，所以 idx[cursor]
+				// 正是屏幕上选中的那一个 —— 这也正是 shown() 存下标
+				// 而不是存张量副本的理由。
+				idx := v.shown()
 				tn := v.m.Tensors[idx[v.cursor]]
 				return v, pushCmd(NewTensorView(v.m, tn))
 			}
@@ -235,20 +235,25 @@ func (v TensorsView) updateFiltering(msg tea.KeyMsg) (View, tea.Cmd) {
 	return v, nil
 }
 
+// canOpen 表示 Enter 现在真的有得开 —— **帮助栏与 Update 读同一个判据**。
+//
+// 按名字/类型/段筛出空列表、或者模型压根没有张量时，Enter 什么都不做；
+// 帮助栏那时还列"Enter 详情"就是在骗用户按（与 `ModelView.opensOnEnter`
+// 由 `hasBodyCursor` 派生同一条规矩）。
+func (v TensorsView) canOpen() bool { return len(v.shown()) > 0 }
+
 func (v TensorsView) Help() []string {
 	if v.filtering {
 		return []string{"输入过滤词", keyEnter + " 确认", keyEsc + " 取消", "Ctrl+C 退出"}
 	}
-	return []string{
-		keyUp + " " + keyDown + " 移动",
+	bindings := []string{keyUp + " " + keyDown + " 移动"}
+	if v.canOpen() {
 		// **接上了就必须列**：keys.go 那条"只列当前视图真的支持的键"
 		// 是两个方向 —— 不支持的不能列（骗用户按），支持的不能漏
 		//（用户不知道有这条路）。详情页在这里接的线。
-		keyEnter + " 详情",
-		keyFilter + " 过滤",
-		keyEsc + " 返回",
-		keyQuit + " 退出",
+		bindings = append(bindings, keyEnter+" 详情")
 	}
+	return append(bindings, keyFilter+" 过滤", keyEsc+" 返回", keyQuit+" 退出")
 }
 
 func (v TensorsView) View(width, height int) string {

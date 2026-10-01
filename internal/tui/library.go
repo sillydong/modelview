@@ -128,7 +128,7 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 			l.filled = 0
 			return l, l.Init()
 		case "enter":
-			if len(l.items) > 0 {
+			if l.canOpen() {
 				it := l.items[l.cursor]
 				return l, pushCmd(NewModelViewFromPath(it.Path, it.Name))
 			}
@@ -136,6 +136,12 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 	}
 	return l, nil
 }
+
+// canOpen 表示 Enter 现在真的有得看 —— **帮助栏与 Update 读同一个判据**。
+//
+// 空库是真会出现的（扫过的地方一个模型都没有），此时 Enter 什么也不做，
+// 帮助栏列了就是骗用户按；还没扫完时列表也是空的，同一个条件一起挡住。
+func (l Library) canOpen() bool { return len(l.items) > 0 }
 
 // fillCmd 造一条"补这个条目的格式与参数量"的命令。
 //
@@ -153,12 +159,11 @@ func (l Library) fillCmd(i int) tea.Cmd {
 }
 
 func (l Library) Help() []string {
-	return []string{
-		keyUp + " " + keyDown + " 移动",
-		keyEnter + " 查看",
-		keyRescan + " 重扫",
-		keyQuit + " 退出",
+	bindings := []string{keyUp + " " + keyDown + " 移动"}
+	if l.canOpen() {
+		bindings = append(bindings, keyEnter+" 查看")
 	}
+	return append(bindings, keyRescan+" 重扫", keyQuit+" 退出")
 }
 
 func (l Library) View(width, height int) string {
