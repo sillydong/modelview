@@ -118,6 +118,67 @@ func TestFind(t *testing.T) {
 	}
 }
 
+// **SeeAlso 图必须无环** —— 环会让界面栈溢出，而且失败点离原因很远。
+//
+// `tui.NewEntryView` 对 SeeAlso 是**急切递归**构造子视图
+// （`pushCmd(NewEntryView(m, target))` 在构造时就求值），
+// 所以 A→B→A 会让"打开 A"直接栈溢出 —— **不是显示错，是崩**。
+//
+// 既有的 `ref_test.go` 只挡了"指向自己"，挡不住 A→B→A 或更长的环。
+//
+// 实测（2026-10）：249 条、有 SeeAlso 的 157 条、边 157、**最长链 0**、环 0 ——
+// 今天是安全的。这条测试是给**将来往数据里加 SeeAlso 的人**的：
+// 加一个跨条目的互指就会红，而不是等到用户点开那一页崩掉。
+func TestSeeAlso_无环(t *testing.T) {
+	const (
+		white = 0 // 还没进过
+		gray  = 1 // 在当前这条 DFS 路径上
+		black = 2 // 这条路径已经走完
+	)
+	color := map[string]int{}
+	maxDepth, edges := 0, 0
+
+	var dfs func(id string, depth int, path []string)
+	dfs = func(id string, depth int, path []string) {
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+		color[id] = gray
+		e, ok := ByID(id)
+		if !ok {
+			// 查不到的目标**是允许的**（ref.Entry 的注释：指向未来的条目是允许的），
+			// 界面上显示成"（速查表里没有这条）"。它没有出边，走不到环。
+			color[id] = black
+			return
+		}
+		for _, next := range e.SeeAlso {
+			edges++
+			switch color[next] {
+			case gray:
+				t.Fatalf("%s → %s 成环：%v —— 急切递归构造子视图时这会栈溢出",
+					id, next, append(path, next))
+			case white:
+				dfs(next, depth+1, append(path, next))
+			}
+		}
+		color[id] = black
+	}
+
+	for _, tb := range Tables() {
+		for _, e := range tb.Entries {
+			if color[e.ID] == white {
+				dfs(e.ID, 0, []string{e.ID})
+			}
+		}
+	}
+	// **最长链只打日志、不判红**：链长不致命，它只影响构造代价 ——
+	// 每深一层就多构造一份子视图（急切递归构造的是"路径"而不是"节点"，
+	// 所以扇出比链长放大得更快）。判红会让一条合理的扩展
+	//（比如 Q4_K → Q6_K → F16）卡住，而它并没有坏处。
+	// 但 0 变成几十时值得看一眼：那说明有人把条目串成了一条链。
+	t.Logf("SeeAlso 图：最长链 %d、边 %d、条目 %d", maxDepth, edges, len(color))
+}
+
 // 并发首次调用 Tables() 必须是安全的。
 //
 // ④b 的界面会一边渲染速查表一边刷新模型库，两个 goroutine 同时第一次

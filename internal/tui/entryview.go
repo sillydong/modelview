@@ -44,6 +44,9 @@ type EntryView struct {
 	cursor  int
 }
 
+// **注意：这里对 SeeAlso 是急切递归构造**（构造 target 的视图时会再构造
+// 它的 target…）。今天安全 —— 实测 249 条里最长链 0、环 0 ——
+// 但环会让"打开那一页"栈溢出。守卫在 internal/ref 的 TestSeeAlso_无环。
 func NewEntryView(m *model.Model, e ref.Entry) EntryView {
 	v := EntryView{m: m, e: e}
 	for _, id := range e.SeeAlso {
