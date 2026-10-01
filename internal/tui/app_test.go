@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/sillydong/modelview/internal/discover"
 	"github.com/sillydong/modelview/internal/model"
 	"github.com/sillydong/modelview/internal/ref"
 )
@@ -445,6 +447,18 @@ func allViews() []namedView {
 	lib2, _ := lib.Update(lib.Init()())
 	lib = lib2.(Library)
 
+	// Library 的另外两条早退分支各来一档，尤其是**空库**：
+	// 它是首次运行就会撞上的第一屏（本机一个模型都没有），
+	// 而原先这一格固定用非空的 fakeLibrary() —— 空库那一支谁都没看，
+	// 实测它的 emptyView 以换行结尾（padTo 会因此多砍一行、
+	// 把"还有 N 行"说大一）。"正在扫描"那一档不跑 Init()，不碰真实磁盘。
+	emptyLib := NewLibrary()
+	emptyLib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{}
+	}
+	emptyLib2, _ := emptyLib.Update(emptyLib.Init()())
+	emptyLib = emptyLib2.(Library)
+
 	m := fakeModel()
 	mv := loadModelView(m)
 
@@ -460,6 +474,11 @@ func allViews() []namedView {
 
 	return []namedView{
 		{"Library", lib},
+		{"Library/空库", emptyLib},
+		// **"正在扫描"那一档不跑 Init 是有意的**：跑它就会真的去 stat
+		// 本机的模型目录，这个守卫的结论会随开发机上装了什么而变
+		//（Library 的字段注释里记过同一条）。View 本身不碰 I/O。
+		{"Library/载入中", NewLibrary()},
 		{"ModelView/概览", mv},
 		{"ModelView/元数据", gotoSection(mv, sectionMetadata)},
 		{"ModelView/张量", gotoSection(mv, sectionTensors)},

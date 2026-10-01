@@ -333,6 +333,16 @@ func (l Library) row(i int, it discover.Item) string {
 	return line
 }
 
+// emptyView 是空模型库那一屏。
+//
+// **末尾去换行**（`TrimRight` 而不是 `TrimSuffix`）：每一行都以 "\n" 结尾，
+// 最后会多出一个 —— 而 padTo 是按 "\n" 切行数出来的，那个空元素让它
+// 多算一行，内容放不下时"…还有 N 行没显示"里的 N 比实际丢掉的**多一**，
+// 内容恰好等于高度时还会白白砍掉一行。
+// 空库是**首次运行就会撞上的第一屏**（本机没装模型时），
+// 而这一支此前没人看过：跨视图的守卫 `allViews()` 用的是非空的假模型库。
+// `TrimRight` 的理由与 EntryView 那处相同：中间行都是 "\n" 结尾，
+// 末尾可能连着一个以上（这里只有一个，但不靠"只有一个"这个巧合）。
 func (l Library) emptyView() string {
 	var sb strings.Builder
 	sb.WriteString("没有发现模型文件。\n\n")
@@ -340,7 +350,7 @@ func (l Library) emptyView() string {
 	for _, p := range discover.Paths() {
 		sb.WriteString(styleDim.Render(fmt.Sprintf("  %-12s %s", p.Source, p.Dir)) + "\n")
 	}
-	return sb.String()
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func totalBytes(items []discover.Item) int64 {
