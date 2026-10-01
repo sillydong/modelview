@@ -300,8 +300,10 @@ func TestQuantSimLines(t *testing.T) {
 	copy(firstOnly, sims)
 	firstOnly[0].Sampled = true
 	for i, ln := range QuantSimLines(firstOnly) {
-		if !strings.HasPrefix(ln, "≈") {
-			t.Errorf("sims[0] 采样时第 %d 行缺 ≈: %q", i, ln)
+		// **整行精确**，不是 HasPrefix：只判前缀的话，"带上了 ≈
+		// 但同一行的数字被改坏"照样绿（整串精确断言的理由见 TestStats_整串精确）
+		if want := "≈" + lines[i]; ln != want {
+			t.Errorf("sims[0] 采样时第 %d 行 = %q，want %q", i, ln, want)
 		}
 	}
 	restOnly := make([]model.QuantSim, len(sims))
@@ -309,8 +311,9 @@ func TestQuantSimLines(t *testing.T) {
 	restOnly[1].Sampled = true
 	restOnly[2].Sampled = true
 	for i, ln := range QuantSimLines(restOnly) {
-		if strings.HasPrefix(ln, "≈") {
-			t.Errorf("口径是 sims[0]（与单行版一致），第 %d 行不该带 ≈: %q", i, ln)
+		if ln != lines[i] {
+			t.Errorf("口径是 sims[0]（与单行版一致），第 %d 行 = %q，want %q",
+				i, ln, lines[i])
 		}
 	}
 
@@ -408,5 +411,84 @@ func TestQuantExistingLines(t *testing.T) {
 	}
 	if got := QuantExisting(nil); got != "" {
 		t.Errorf("nil 的单行输出仍是空串，实际 %q", got)
+	}
+}
+
+// **单行版（CLI 用）的整串精确断言**，与 `TestStats_整串精确` 同一个理由。
+//
+// 原来那条 `TestQuantExistingString` 全是 Contains：把"⚠压平 3 子块"里的
+// 数字换掉、把三个字段的先后顺序调换、把 join 的分隔符从一个空格改成两个 ——
+// 只要那些词还出现过，它就全绿。而行与行之间的**分隔与顺序**
+// 正是这条输出唯一不能错的东西（`QuantExistingLines` 拆行时按同一个顺序 join）。
+//
+// want 是按 QuantExistingLines 的约定手推的：Float 在 [1e-3,1e5) 内
+// 4 位小数（0.5 → "0.5000"），Count 用 SI 缩写（800 → "800"、2000 → "2.000 K"），
+// 两个警告之间、以及每一行之间都是**一个空格**。
+func TestQuantExisting_整串精确(t *testing.T) {
+	full := &model.QuantInfo{
+		Scheme: "Q4_K", BitsPerWeight: 4.5, Blocks: 100, SubBlocks: 800,
+		BlockElems: 32, ScaleMin: 0.001, ScaleMax: 0.5, ScaleMedian: 0.02,
+		ZeroScaleBlocks: 3, FlattestIndex: 7, FlattestRatio: 0.02,
+	}
+	// 两个警告都有：它们的先后、以及"最扁"那一项里 #N 与比值的对应
+	want := "Q4_K 4.5 bit/权重 800 子块 " +
+		"scale[0.0010, 0.5000] 中位 0.0200 " +
+		"⚠压平 3 子块 最扁 #7（比值 0.0200）"
+	if got := QuantExisting(full); got != want {
+		t.Errorf("QuantExisting() =\n got %q\nwant %q", got, want)
+	}
+
+	// 抽样中位数：单行版**必须**带上标记（TUI 的分行版有同一份标记），
+	// 否则 CLI 把样本值打成精确值
+	sampled := *full
+	sampled.ScaleMedianSampled = true
+	wantSampled := "Q4_K 4.5 bit/权重 800 子块 " +
+		"scale[0.0010, 0.5000] 中位 ≈0.0200（抽样） " +
+		"⚠压平 3 子块 最扁 #7（比值 0.0200）"
+	if got := QuantExisting(&sampled); got != wantSampled {
+		t.Errorf("抽样 QuantExisting() =\n got %q\nwant %q", got, wantSampled)
+	}
+
+	// 一个警告都没有：第三条整个不返回，单行版也就**不该多出分隔空格**
+	//（多一个空格在终端里看不出来，但它是 CLI 输出的逐字节契约）
+	quiet := &model.QuantInfo{Scheme: "Q8_0", BitsPerWeight: 8.5, SubBlocks: 2000,
+		ScaleMin: 0.0625, ScaleMax: 0.5, ScaleMedian: 0.2, FlattestRatio: 1}
+	wantQuiet := "Q8_0 8.5 bit/权重 2.000 K 子块 scale[0.0625, 0.5000] 中位 0.2000"
+	if got := QuantExisting(quiet); got != wantQuiet {
+		t.Errorf("QuantExisting() =\n got %q\nwant %q", got, wantQuiet)
+	}
+}
+
+// **张量行末尾那一段的整串精确断言**（CLI 的每一行都以它结尾）。
+//
+// 这条钉的是**组装**：模拟优先于诊断、两者只出一个、都没有时不留空档。
+// 原先全是 Contains，`TensorQuant` 把两个拼在一起（"模拟[...] Q4_K ..."）
+// 或者多补一个前导空格，都拦不住。
+func TestTensorQuant_整串精确(t *testing.T) {
+	sims := []model.QuantSim{
+		{Target: "Q8_0", BitsPerWeight: 8.5, SNRDB: 45.2, Compression: 3.76}}
+	quant := &model.QuantInfo{Scheme: "Q4_K", BitsPerWeight: 4.5, SubBlocks: 8,
+		ScaleMin: 0.1, ScaleMax: 0.5, ScaleMedian: 0.2, FlattestRatio: 1}
+
+	wantSim := "模拟[Q8_0 8.5 bit/权重 45.2dB ×3.76]"
+	if got := TensorQuant(&model.Tensor{QuantSims: sims}); got != wantSim {
+		t.Errorf("浮点张量 =\n got %q\nwant %q（应当就是 QuantSim 那一行）", got, wantSim)
+	}
+
+	wantQuant := "Q4_K 4.5 bit/权重 8 子块 scale[0.1000, 0.5000] 中位 0.2000"
+	if got := TensorQuant(&model.Tensor{Quant: quant}); got != wantQuant {
+		t.Errorf("量化张量 =\n got %q\nwant %q（应当就是 QuantExisting 那一行）",
+			got, wantQuant)
+	}
+
+	// 都有（不该发生）：**只出模拟那一份**，不是两份都出
+	if got := TensorQuant(&model.Tensor{QuantSims: sims, Quant: quant}); got != wantSim {
+		t.Errorf("两者都有时 =\n got %q\nwant %q（不能同时给两个互相矛盾的数字）",
+			got, wantSim)
+	}
+
+	// 都没有：空串，调用方不该多打一个空格
+	if got := TensorQuant(&model.Tensor{}); got != "" {
+		t.Errorf("两者皆无时应是空串，实际 %q", got)
 	}
 }
