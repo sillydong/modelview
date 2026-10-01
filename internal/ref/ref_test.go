@@ -126,7 +126,7 @@ func TestFind(t *testing.T) {
 //
 // 既有的 `ref_test.go` 只挡了"指向自己"，挡不住 A→B→A 或更长的环。
 //
-// 实测（2026-10）：249 条、有 SeeAlso 的 157 条、边 157、**最长链 0**、环 0 ——
+// 实测（2026-10）：249 条、有 SeeAlso 的 157 条、边 157、**最长链 1**、环 0 ——
 // 今天是安全的。这条测试是给**将来往数据里加 SeeAlso 的人**的：
 // 加一个跨条目的互指就会红，而不是等到用户点开那一页崩掉。
 func TestSeeAlso_无环(t *testing.T) {
@@ -136,13 +136,10 @@ func TestSeeAlso_无环(t *testing.T) {
 		black = 2 // 这条路径已经走完
 	)
 	color := map[string]int{}
-	maxDepth, edges := 0, 0
+	edges := 0
 
-	var dfs func(id string, depth int, path []string)
-	dfs = func(id string, depth int, path []string) {
-		if depth > maxDepth {
-			maxDepth = depth
-		}
+	var dfs func(id string, path []string)
+	dfs = func(id string, path []string) {
 		color[id] = gray
 		e, ok := ByID(id)
 		if !ok {
@@ -158,7 +155,7 @@ func TestSeeAlso_无环(t *testing.T) {
 				t.Fatalf("%s → %s 成环：%v —— 急切递归构造子视图时这会栈溢出",
 					id, next, append(path, next))
 			case white:
-				dfs(next, depth+1, append(path, next))
+				dfs(next, append(path, next))
 			}
 		}
 		color[id] = black
@@ -167,16 +164,57 @@ func TestSeeAlso_无环(t *testing.T) {
 	for _, tb := range Tables() {
 		for _, e := range tb.Entries {
 			if color[e.ID] == white {
-				dfs(e.ID, 0, []string{e.ID})
+				dfs(e.ID, []string{e.ID})
 			}
 		}
 	}
-	// **最长链只打日志、不判红**：链长不致命，它只影响构造代价 ——
-	// 每深一层就多构造一份子视图（急切递归构造的是"路径"而不是"节点"，
-	// 所以扇出比链长放大得更快）。判红会让一条合理的扩展
-	//（比如 Q4_K → Q6_K → F16）卡住，而它并没有坏处。
-	// 但 0 变成几十时值得看一眼：那说明有人把条目串成了一条链。
-	t.Logf("SeeAlso 图：最长链 %d、边 %d、条目 %d", maxDepth, edges, len(color))
+
+	// **最长链单独用记忆化算，不挂在 DFS 的深度上**：DFS 里已经涂黑的
+	// 节点不再下探，深度因此依赖**枚举顺序** —— 表里排在前面、或者
+	// 已经被别人的 DFS 访问过的条目一律贡献 0。旧版就是这么报出
+	// "249 条最长链 0"的，而真实最长链是 1（`dtype:F64 → float:F64`
+	// 那一族：floats 表在前，float:F64 先被涂黑，之后 dtype:F64 那条边
+	// 连下探都不会发生）。一个会骗人的数字比没有数字更糟。
+	//
+	// 环检测**不受影响**（外层循环覆盖全部条目），所以这一段放心跑在
+	// 它后面：真有环的话上面那句 t.Fatalf 已经结束了。
+	// 记忆化同时避免了共享后继被反复展开（扇出大时那是指数级）。
+	memo := map[string]int{} // id -> 从它出发的最长链（**边数**）
+	var longest func(id string) int
+	longest = func(id string) int {
+		if d, ok := memo[id]; ok {
+			return d
+		}
+		best := 0
+		if e, ok := ByID(id); ok {
+			for _, next := range e.SeeAlso {
+				if d := 1 + longest(next); d > best {
+					best = d
+				}
+			}
+		}
+		memo[id] = best
+		return best
+	}
+	maxChain := 0
+	for _, tb := range Tables() {
+		for _, e := range tb.Entries {
+			if d := longest(e.ID); d > maxChain {
+				maxChain = d
+			}
+		}
+	}
+
+	// 链长本身不致命（它只影响构造代价：每深一层就多构造一份子视图），
+	// 所以这里**不断言它该有多长**，只钉住"这个数字不许再退回成 0"。
+	// 0 是旧量法在 249 条上的错误结论，也正是这条注释原先抄着的那个数 ——
+	// 数据里真有链时，量法必须报得出来。
+	if maxChain < 1 {
+		t.Errorf("SeeAlso 最长链 = %d，但图里有 %d 条边 —— "+
+			"量法退回了依赖枚举顺序的旧版（错误结论：249 条最长链 0）",
+			maxChain, edges)
+	}
+	t.Logf("SeeAlso 图：最长链 %d、边 %d、条目 %d", maxChain, edges, len(color))
 }
 
 // 并发首次调用 Tables() 必须是安全的。

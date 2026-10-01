@@ -44,8 +44,12 @@ type EntryView struct {
 }
 
 // **注意：这里对 SeeAlso 是急切递归构造**（构造 target 的视图时会再构造
-// 它的 target…）。今天安全 —— 实测 249 条里最长链 0、环 0 ——
+// 它的 target…）。今天安全 —— 实测 249 条里最长链 1、环 0 ——
 // 但环会让"打开那一页"栈溢出。守卫在 internal/ref 的 TestSeeAlso_无环。
+//
+// （那个"最长链 1"是**记忆化量法**的结果：旧版把它挂在 DFS 深度上，
+// 涂黑过的节点不再下探，于是同一个图被量成 0 —— 链长不致命，但一个
+// 会随枚举顺序变的数字不能当事实抄进注释。）
 func NewEntryView(m *model.Model, e ref.Entry) EntryView {
 	v := EntryView{m: m, e: e}
 	// **"在本模型中"排在前面**：用户查一条规范，最想知道的是
