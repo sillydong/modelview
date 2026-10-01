@@ -139,9 +139,16 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 
 // canOpen 表示 Enter 现在真的有得看 —— **帮助栏与 Update 读同一个判据**。
 //
-// 空库是真会出现的（扫过的地方一个模型都没有），此时 Enter 什么也不做，
-// 帮助栏列了就是骗用户按；还没扫完时列表也是空的，同一个条件一起挡住。
-func (l Library) canOpen() bool { return len(l.items) > 0 }
+// 两个条件都要：
+//   - 列表为空（扫过的地方一个模型都没有）：没有可索引的条目，
+//     而 cursor 会一直压在 0 上；
+//   - `!loaded`：屏幕上是"正在扫描模型目录…"，列表**不在屏幕上** ——
+//     重扫那一下列表字段还是上一轮那份，Enter 那时打开的是一个
+//     用户看不见的条目（本仓为这条形状踩过好几次，见 View 里那段窗口说明）。
+//
+// 两处列/不列、开/不开都走这一个函数，所以不存在"帮助栏说能开、按下去没反应"
+// 或者反过来"没列却按得开"。
+func (l Library) canOpen() bool { return l.loaded && len(l.items) > 0 }
 
 // fillCmd 造一条"补这个条目的格式与参数量"的命令。
 //

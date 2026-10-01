@@ -289,6 +289,46 @@ func TestLibrary_空库帮助栏不列Enter(t *testing.T) {
 	}
 }
 
+// **重扫期间按 Enter 不该打开一个看不见的条目。**
+//
+// 屏幕上是"正在扫描模型目录…"，而 items 还是上一轮那份 ——
+// 判据只写 `len(items) > 0` 的话，用户这一下会进到一个自己没看见的模型里
+// （本仓为"打开看不见的那一条"踩过好几次，见 View 里那段窗口说明）。
+func TestLibrary_重扫期间不列Enter也不打开(t *testing.T) {
+	lib, _ := fakeLibrary()
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+	if !lib.canOpen() {
+		t.Fatal("前提不成立：扫完之后应当能开")
+	}
+
+	// 按 r 发起重扫：只把 loaded 打回假，列表字段还留着
+	lib3, cmd := lib.Update(key("r"))
+	lib = lib3.(Library)
+	if cmd == nil {
+		t.Fatal("按 r 没返回重扫命令")
+	}
+	if lib.loaded || len(lib.items) == 0 {
+		t.Fatalf("前提不成立：loaded=%v, items=%d", lib.loaded, len(lib.items))
+	}
+	if help := strings.Join(lib.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("重扫期间帮助栏列了 %s，而屏幕上是「正在扫描」: %q", keyEnter, help)
+	}
+	if _, c := lib.Update(key("enter")); c != nil {
+		t.Error("重扫期间按 Enter 打开了看不见的条目")
+	}
+
+	// 扫完之后同一个判据要放行
+	lib4, _ := lib.Update(cmd())
+	lib = lib4.(Library)
+	if help := strings.Join(lib.Help(), " "); !strings.Contains(help, keyEnter) {
+		t.Errorf("扫完之后帮助栏少了 %s: %q", keyEnter, help)
+	}
+	if _, c := lib.Update(key("enter")); c == nil {
+		t.Error("扫完之后按 Enter 没动作")
+	}
+}
+
 // 模型名超长时第一列不能撑破列宽 —— 名字来自文件名，可以任意长。
 func TestLibrary_长名字被截断(t *testing.T) {
 	lib := NewLibrary()
