@@ -104,6 +104,13 @@ jobs:
         run: |
           set -euo pipefail
           ls -l dist
+          # 同名 Release 已存在时先删掉再造：重跑同一个 tag 是正常操作
+          # （上一次跑到一半失败、或者 tag 被移动过）。不处理的话
+          # `gh release create` 会直接报 "already exists"。
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "已存在 $GITHUB_REF_NAME 的 Release，先删除再重建"
+            gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
