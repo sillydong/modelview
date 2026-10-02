@@ -139,9 +139,12 @@ func Parse(path string) (*model.Model, error) {
 			size = 0
 		}
 
-		var params int64 = 1
-		for _, d := range info.Dims {
-			params *= d
+		// 与 tensorByteSize 用同一个 elemCount —— 那边早就查了溢出，
+		// 这条循环原来没查，于是同一个文件里两处结论互相矛盾
+		//（一处报「超出 int64」，另一处把回绕的负数当事实打印）。
+		params, err := elemCount(info.Dims)
+		if err != nil {
+			return nil, fmt.Errorf("张量 %s: %w", info.Name, err)
 		}
 
 		m.Tensors = append(m.Tensors, &model.Tensor{

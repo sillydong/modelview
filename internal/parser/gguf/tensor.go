@@ -77,6 +77,31 @@ func (e ErrUnknownBlockType) Error() string {
 	return fmt.Sprintf("GGML 类型码 %d 的块结构未收录，无法计算占用大小", e.Code)
 }
 
+// elemCount 把形状的各个维度连乘，溢出时报错。
+//
+// **只留一份**：tensorByteSize 与解析循环都要这个数，而原先只有前者
+// 查了溢出 —— 后者回绕成负数，于是同一个文件里一处报「元素总数超出
+// int64 上限」、另一处把回绕值当事实打印给用户（实测 dims=[3, 2^62]
+// 会打出「总参数 -4611686018427387904」，CLI/JSON/TUI 三处都是）。
+//
+// safetensors 与 pytorch 两个解析器都各自查了溢出；GGUF 这边合并成
+// 一个函数，是因为它自己内部就有两处要算元素总数。
+func elemCount(dims []int64) (int64, error) {
+	n := int64(1)
+	for _, d := range dims {
+		// 负维度要先挡住：`math.MaxInt64/d` 对负数是负数，
+		// 后面那条溢出判据会先命中，报出来的原因就变成了溢出
+		if d < 0 {
+			return 0, fmt.Errorf("负的维度 %d", d)
+		}
+		if d != 0 && n > math.MaxInt64/d {
+			return 0, fmt.Errorf("形状 %v 的元素总数超出 int64 上限", dims)
+		}
+		n *= d
+	}
+	return n, nil
+}
+
 // tensorByteSize 计算一个张量占用的字节数。
 //
 // 非量化类型 = 元素数 × 每元素字节数。
@@ -85,15 +110,9 @@ func (e ErrUnknownBlockType) Error() string {
 // 块尺寸来自 model.Dtype —— 全项目唯一出处。这里保留 code→Dtype 的转换，
 // 是因为错误信息里要带上原始的 GGML 类型码，便于对着规范查。
 func tensorByteSize(dims []int64, code uint32) (int64, error) {
-	elems := int64(1)
-	for _, d := range dims {
-		if d < 0 {
-			return 0, fmt.Errorf("负的维度 %d", d)
-		}
-		if d != 0 && elems > math.MaxInt64/d {
-			return 0, fmt.Errorf("形状 %v 的元素总数超出 int64 上限", dims)
-		}
-		elems *= d
+	elems, err := elemCount(dims)
+	if err != nil {
+		return 0, err
 	}
 
 	dtype, known := ggmlDtype(code)

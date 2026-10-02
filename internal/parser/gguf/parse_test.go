@@ -357,3 +357,54 @@ func TestParse_未收录类型不致命(t *testing.T) {
 		t.Errorf("元素数 = %d, want 256", m.Tensors[0].ParamCount)
 	}
 }
+
+// 元素总数溢出时必须报错，不能回绕成负数。
+//
+// 实测过：dims=[3, 2^62] 的小文件会让 CLI/JSON/TUI 同时打出
+// 「总参数 -4611686018427387904」—— 而同一个文件里 tensorByteSize
+// 已经报了「元素总数超出 int64 上限」，两处结论互相矛盾，
+// 且都当成事实打给用户看。safetensors 与 pytorch 两个解析器都查了
+// 这个溢出，只有 GGUF 没查。
+func TestParse_元素总数溢出(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 1, 0)
+	b.str("big")
+	b.u32(2)
+	b.u64(3)
+	b.u64(1 << 62)
+	b.u32(0) // F32
+	b.u64(0)
+	b.raw(make([]byte, alignUp(int64(len(b.bytes())), 32)-int64(len(b.bytes()))))
+
+	_, err := Parse(writeFile(t, "overflow.gguf", b.bytes()))
+	if err == nil {
+		t.Fatal("元素总数溢出时应当报错，实际成功了")
+	}
+	// 错误信息要指明是 int64 装不下，而不是含糊的"解析失败"
+	if !strings.Contains(err.Error(), "int64") {
+		t.Errorf("错误信息应点明是 int64 溢出，得到: %v", err)
+	}
+	if !strings.Contains(err.Error(), "big") {
+		t.Errorf("错误信息应指明是哪个张量，得到: %v", err)
+	}
+}
+
+// 边界：元素总数正好等于 MaxInt64 时不该被误判成溢出。
+func TestParse_元素总数恰好不溢出(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 1, 0)
+	b.str("edge")
+	b.u32(1)
+	b.u64(math.MaxInt64)
+	b.u32(0) // F32
+	b.u64(0)
+	b.raw(make([]byte, alignUp(int64(len(b.bytes())), 32)-int64(len(b.bytes()))))
+
+	m, err := Parse(writeFile(t, "edge.gguf", b.bytes()))
+	if err != nil {
+		t.Fatalf("MaxInt64 个元素是能表示的，不该报错: %v", err)
+	}
+	if got := m.Tensors[0].ParamCount; got != math.MaxInt64 {
+		t.Errorf("ParamCount = %d, want %d", got, int64(math.MaxInt64))
+	}
+}
