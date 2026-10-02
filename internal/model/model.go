@@ -245,7 +245,7 @@ type Stats struct {
 	// Histogram 是 64 个等宽桶的计数，覆盖区间 [Min, Max]。
 	//
 	// 不再单独存直方图区间：原先的 HistMin/HistMax 在所有路径上都
-	// 恒等于 Min/Max（fillHistogram 就是直接赋值），而注释给的理由
+	// 恒等于 Min/Max（分桶就是直接拿这两个字段当区间），而注释给的理由
 	// ——"Min/Max 会被 NaN 影响"——是错的：NaN/Inf 已经被排除在
 	// Min/Max 之外了。同一个区间被两个字段表达，其中一个是冗余的。
 	//

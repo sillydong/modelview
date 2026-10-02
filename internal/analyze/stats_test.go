@@ -2,7 +2,10 @@ package analyze
 
 import (
 	"math"
+	"slices"
 	"testing"
+
+	"github.com/sillydong/modelview/internal/model"
 )
 
 func TestComputeStats_基本量(t *testing.T) {
@@ -235,5 +238,129 @@ func TestSampleStep_严格递增不重复(t *testing.T) {
 	}
 	if prev >= total {
 		t.Errorf("末个下标 %d 越界（总数 %d）", prev, total)
+	}
+}
+
+// slowStats 是最直白的实现：先把有限值挑出来，再按定义逐个算。
+// 它不追求快，只追求"读一遍就能确认是对的" —— 用来给 computeStats
+// 当独立对照。**不能调 computeStats 里的任何东西**，否则就不是对照了。
+func slowStats(vals []float32) model.Stats {
+	var s model.Stats
+	s.Histogram = make([]int64, histogramBuckets)
+	var finite []float64
+	for _, v := range vals {
+		f := float64(v)
+		switch {
+		case math.IsNaN(f):
+			s.NaN++
+		case math.IsInf(f, 0):
+			s.Inf++
+		default:
+			finite = append(finite, f)
+		}
+	}
+	s.Count = int64(len(vals)) // Count 是样本总数，**含**非有限值
+	if len(finite) == 0 {
+		return s
+	}
+	s.Min, s.Max = finite[0], finite[0]
+	var sum, zeros float64
+	for _, f := range finite {
+		if f < s.Min {
+			s.Min = f
+		}
+		if f > s.Max {
+			s.Max = f
+		}
+		if f == 0 {
+			zeros++
+		}
+		sum += f
+	}
+	s.Mean = sum / float64(len(finite))
+	var sq float64
+	for _, f := range finite {
+		sq += (f - s.Mean) * (f - s.Mean)
+	}
+	s.Std = math.Sqrt(sq / float64(len(finite)))
+	var out int64
+	for _, f := range finite {
+		if f < s.Mean-3*s.Std || f > s.Mean+3*s.Std {
+			out++
+		}
+	}
+	s.ZeroRatio = zeros / float64(len(finite))
+	s.OutlierRatio = float64(out) / float64(len(finite))
+	if s.Max > s.Min {
+		w := (s.Max - s.Min) / float64(histogramBuckets)
+		for _, f := range finite {
+			i := int((f - s.Min) / w)
+			if i >= histogramBuckets {
+				i = histogramBuckets - 1
+			}
+			s.Histogram[i]++
+		}
+	} else {
+		s.Histogram[histogramBuckets/2] = int64(len(finite))
+	}
+	return s
+}
+
+// computeStats 去掉 valid []float64 副本之后，统计量必须逐值不变。
+//
+// 这是纯内存优化：原来"先收一份 float64 副本再扫两遍"变成"直接扫原
+// 切片三遍"。累加顺序变了，浮点求和可能有末位差异，所以容差取 1e-12
+// 相对值 —— float64 累加 4000 个数最坏在 1e-14 量级，1e-12 有 100 倍
+// 余量，同时足以抓住真正的口径错误（例如把 NaN 的计数从分母里漏掉，
+// 那是 1e-3 量级的差）。
+func TestComputeStats_与独立实现逐值一致(t *testing.T) {
+	vals := make([]float32, 0, 4096)
+	for i := range 3000 {
+		vals = append(vals, float32(math.Sin(float64(i)*0.17))*3.7)
+	}
+	// 混进各种边界：零、极值、非有限、极大极小
+	vals = append(vals,
+		0, 0, 0,
+		float32(math.NaN()), float32(math.Inf(1)), float32(math.Inf(-1)),
+		1e-30, -1e-30, 1e30, -1e30,
+	)
+	for len(vals) < 4096 {
+		vals = append(vals, 0.5)
+	}
+
+	got := computeStats(vals, histogramBuckets, false)
+	want := slowStats(vals)
+
+	relDiff := func(a, b float64) float64 {
+		if b == 0 {
+			return math.Abs(a)
+		}
+		return math.Abs(a-b) / math.Abs(b)
+	}
+	for _, f := range []struct {
+		name     string
+		got, ref float64
+	}{
+		{"Min", got.Min, want.Min}, {"Max", got.Max, want.Max},
+		{"Mean", got.Mean, want.Mean}, {"Std", got.Std, want.Std},
+		{"ZeroRatio", got.ZeroRatio, want.ZeroRatio},
+		{"OutlierRatio", got.OutlierRatio, want.OutlierRatio},
+	} {
+		if relDiff(f.got, f.ref) > 1e-12 {
+			t.Errorf("%s = %v, 独立实现 %v", f.name, f.got, f.ref)
+		}
+	}
+	if got.Count != want.Count || got.NaN != want.NaN || got.Inf != want.Inf {
+		t.Errorf("计数不符: got Count=%d NaN=%d Inf=%d, want %d/%d/%d",
+			got.Count, got.NaN, got.Inf, want.Count, want.NaN, want.Inf)
+	}
+	if !slices.Equal(got.Histogram, want.Histogram) {
+		var bad []int
+		for i := range got.Histogram {
+			if got.Histogram[i] != want.Histogram[i] {
+				bad = append(bad, i)
+			}
+		}
+		t.Errorf("直方图 %d 个桶不符，前几个下标: %v", len(bad), bad[:min(5, len(bad))])
 	}
 }
