@@ -17,11 +17,20 @@ Go 写的模型文件分析器，**TUI 界面 + 非交互 CLI** 两用，支持 
 
 ## 安装
 
-需要 Go 1.26+。在仓库根目录：
+预编译二进制在 [Releases](https://github.com/sillydong/modelview/releases)：
+Linux / macOS / Windows，amd64 与 arm64。
+
+或者用 Go 1.26+ 自己装：
 
 ```bash
-go build -o modelview ./cmd/modelview   # 产出 ./modelview
-go install ./cmd/modelview              # 或装到 $GOBIN
+go install github.com/sillydong/modelview/cmd/modelview@latest
+```
+
+从源码构建：
+
+```bash
+git clone https://github.com/sillydong/modelview.git && cd modelview
+go build -o modelview ./cmd/modelview
 ```
 
 产出的二进制是自包含的，运行时不需要任何外部文件。依赖只有 `bubbletea`（TUI 框架）与 `lipgloss`（样式），其余全是标准库。
@@ -392,8 +401,9 @@ python3 tools/check_readme.py           # 本文档与代码的名字/路径是�
 日常回归用的是**入库的小样本与真值**（`internal/decode/testdata/`、`internal/ref/testdata/`，
 从真实文件截取），所以 `go test` 不需要网络、不需要 Python。
 
-更完整的一组语料是本机的 ollama 模型与 `另一个项目` 的 artifacts，**不在仓库里**——
-那类测试默认跳过，设 `MODELVIEW_REAL=1` 则把「语料缺失」判为失败
+更完整的一组语料是**作者本机的** ollama 模型与另一个项目的 artifacts，
+**不在仓库里**，别人 clone 下来也没有——那类测试默认跳过（`go test -v` 里能看到
+跳过了多少条），设 `MODELVIEW_REAL=1` 则把「语料缺失」判为失败
 （用来确认它们真的跑过，而不是静默跳过）：
 
 ```bash
@@ -437,3 +447,11 @@ MODELVIEW_REAL=1 go test ./...
 
 - [设计文档](docs/superpowers/specs/2026-09-26-modelview-design.md) —— 目标、非目标、各格式解析要点、判据取舍与实测依据
 - [实施计划](docs/superpowers/plans/) —— 分阶段的实现计划
+
+## 许可证
+
+[MIT](LICENSE)
+
+仓库里入库的验证产物（`internal/decode/testdata/`、`internal/ref/testdata/`）派生自
+[llama.cpp 的 `gguf` 包](https://github.com/ggml-org/llama.cpp)（MIT）与
+真实模型文件的少量字节（用于对齐上游行为），随本项目一同按 MIT 分发。

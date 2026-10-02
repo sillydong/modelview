@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# CI 只读仓库。给了写权限的默认令牌是公开仓库里最常见的自伤方式。
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # 版本以 go.mod 为准，不在 workflow 里再写一遍 —— 两处写版本号
+          # 迟早会漂，而漂了之后本地与 CI 跑的不是同一个工具链
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      # 三平台统一用 bash：Windows runner 上默认是 pwsh，
+      # `test -z "$(gofmt -l .)"` 这种写法在那里不成立（实测过语义差异）
+      - name: gofmt
+        shell: bash
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "这些文件没格式化："
+            echo "$out"
+            exit 1
+          fi
+      # **刻意不设 MODELVIEW_REAL**：CI 上没有作者本机的真实语料，
+      # 所以这一跑走的正是"别人 clone 下来"的那条路径 ——
+      # 语料相关的测试跳过（跳过数会打进日志），其余的必须全过。
+      # 语料只有作者机器上有的测试，在这里是**验不了**的，
+      # 这一点不假装：日志里的 SKIP 数就是它的可见边界。
+      - run: go test ./...
+
+  race:
+    name: race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./... -race
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # 钉死版本：`.golangci.yml` 是 v2 格式（首行 version: "2"），
+      # 跑 v1 会直接报配置不认。用官方安装脚本而不是 action，
+      # 是为了让这里的版本号与本地 `golangci-lint --version` 一致
+      - name: 安装 golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: golangci-lint run ./...
+
+  docs:
+    name: 文档与代码一致
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 核对 README 里的选项名 / 路径 / 脚本名是否与代码一致。
+      # 这类漂移不会让任何 Go 测试变红（文档错了编译器不知道），
+      # 所以单独一条。
+      - run: python3 tools/check_readme.py

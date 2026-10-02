@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -344,5 +345,98 @@ func TestRun_scan非终端下json仍是json(t *testing.T) {
 	var v map[string]any
 	if err := json.Unmarshal(got, &v); err != nil {
 		t.Fatalf("不是合法 JSON: %v\n%s", err, got)
+	}
+}
+
+// 版本号必须**从构建信息推导**，而不是一句硬编码的常量。
+//
+// 为什么需要 readBuildInfo 那层间接：测试二进制里 Main.Version 恒为
+// "(devel)"、也没有 vcs.revision（实测确认），所以"版本是从构建信息
+// 推出来的"在端到端层面不可观测 —— 把 version() 换成 return "dev"，
+// `--version` 的输出一模一样。这条测试把构造好的构建信息喂进
+// version()（生产路径上真的被调用的那个函数），才验得出映射本身。
+func TestVersion_从构建信息推导(t *testing.T) {
+	tests := []struct {
+		name     string
+		ver      string
+		rev      string
+		modified string
+		want     string
+	}{
+		{"装了带版本号的发布版", "v1.2.3", "", "", "v1.2.3"},
+		{"go build 出来的", "(devel)", "", "", "dev"},
+		{"构建信息里没有版本", "", "", "", "dev"},
+		{"本地构建带修订号", "(devel)", "0123456789abcdef", "", "dev (0123456)"},
+		{"工作树有未提交改动", "(devel)", "0123456789abcdef", "true", "dev (0123456, dirty)"},
+		// 这条来自实测：仓库还没打 tag 时，Go 给本地构建合成的不是
+		// "(devel)" 而是一个含提交号的伪版本，原样打出来会是
+		// `v0.0.0-20261002132043-ec74684ce6d7+dirty (ec74684, dirty)` ——
+		// 同一件事说两遍。
+		{"本仓库里 go build 出来的伪版本", "v0.0.0-20261002132043-ec74684ce6d7+dirty",
+			"ec74684ce6d7", "true", "dev (ec74684, dirty)"},
+		// 有真版本号时只报版本号：发布产物上再挂一个提交号是噪音
+		{"发布了版本号就不再附提交号", "v1.0.0", "0123456789abcdef", "", "v1.0.0"},
+		{"tag 之后的伪版本原样保留", "v1.2.4-0.20261002132043-ec74684ce6d7", "ec74684ce6d7", "", "v1.2.4-0.20261002132043-ec74684ce6d7"},
+		{"修订号短于 7 位就整个用", "(devel)", "abc", "", "dev (abc)"},
+		{"伪版本但拿不到修订号", "v0.0.0-20261002132043-ec74684ce6d7", "", "", "dev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := readBuildInfo
+			t.Cleanup(func() { readBuildInfo = old })
+			var settings []debug.BuildSetting
+			if tt.rev != "" {
+				settings = append(settings, debug.BuildSetting{Key: "vcs.revision", Value: tt.rev})
+			}
+			if tt.modified != "" {
+				settings = append(settings, debug.BuildSetting{Key: "vcs.modified", Value: tt.modified})
+			}
+			readBuildInfo = func() (*debug.BuildInfo, bool) {
+				return &debug.BuildInfo{
+					Main:     debug.Module{Version: tt.ver},
+					Settings: settings,
+				}, true
+			}
+			if got := version(); got != tt.want {
+				t.Errorf("version() = %q，想要 %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("拿不到构建信息时退到 dev", func(t *testing.T) {
+		old := readBuildInfo
+		t.Cleanup(func() { readBuildInfo = old })
+		readBuildInfo = func() (*debug.BuildInfo, bool) { return nil, false }
+		if got := version(); got != "dev" {
+			t.Errorf("version() = %q，想要 \"dev\"", got)
+		}
+	})
+}
+
+// --version 打给用户的那一行**格式**要对。
+//
+// **这条只钉格式，不钉来源**：测试二进制里构建信息恒为 (devel) 且无
+// vcs 设置，所以它证明不了"版本是从构建信息来的"（那由
+// TestVersion_从构建信息推导 负责）。它守的是另一件事 ——
+// 输出行不能空、不能是 Go 的内部占位符、必须带程序名。
+func TestRun_version输出可读(t *testing.T) {
+	got := captureStdout(t, func() {
+		resetFlags(t, "--version")
+		if err := run(); err != nil {
+			t.Fatalf("--version 报错了: %v", err)
+		}
+	})
+	out := strings.TrimSpace(got)
+	if out == "" {
+		t.Fatal("--version 什么都没打印")
+	}
+	if strings.Contains(out, "(devel)") {
+		t.Errorf("输出了 Go 的内部占位符，用户看不懂：%q", out)
+	}
+	if !strings.HasPrefix(out, "modelview ") {
+		t.Errorf("版本行应当以程序名开头，得到 %q", out)
+	}
+	if strings.TrimSpace(strings.TrimPrefix(out, "modelview ")) == "" {
+		t.Errorf("只有程序名，没有版本：%q", out)
 	}
 }

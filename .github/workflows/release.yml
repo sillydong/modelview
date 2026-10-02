@@ -1,0 +1,105 @@
+name: Release
+
+# 打 tag 才触发：发布产物只应当从标签产生，而不是从某个分支的头上。
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # 建 Release、传产物
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
+          - {goos: windows, goarch: amd64}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # **必须全量**：Go 从 git 历史里取版本号与提交号，
+          # 浅克隆会让 `--version` 退化成 "dev"（实测过这个退化）
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 构建并打包
+        shell: bash
+        env:
+          # 走 env 而不是把 ${{ }} 直接写进 run：标签名是可以被
+          # 有推送权限的人构造的，拼进 shell 命令就是一条注入路径
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          name="modelview_${GITHUB_REF_NAME}_${GOOS}_${GOARCH}"
+          bin=modelview
+          [ "$GOOS" = windows ] && bin=modelview.exe
+
+          mkdir -p "dist/$name"
+          go build -trimpath -ldflags "-s -w" -o "dist/$name/$bin" ./cmd/modelview
+          # 只发二进制不放许可证是再分发时的常见疏漏，两条一起进包
+          cp LICENSE README.md "dist/$name/"
+
+          # 自证：产物里的版本号必须真的等于这个标签。
+          # 它守两件事 —— 关掉 VCS 信息的构建（--version 会变成 dev）、
+          # 以及把版本号写死在代码里。**只有能跑起来的平台能验**，
+          # 交叉编译出来的其它架构在这里验不了，那是这条检查的边界。
+          if [ "$GOOS" = linux ] && [ "$GOARCH" = amd64 ]; then
+            got=$("./dist/$name/$bin" --version)
+            case "$got" in
+              *"$GITHUB_REF_NAME"*) echo "版本自证通过：$got" ;;
+              *) echo "产物里的版本号与标签不符：$got（标签 $GITHUB_REF_NAME）"; exit 1 ;;
+            esac
+          fi
+
+          cd dist
+          if [ "$GOOS" = windows ]; then
+            zip -qr "$name.zip" "$name"
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+      # 单独一步：zip 的 glob 与 tar.gz 不同，混在一条 path 里时
+      # 少了一个平台不会有任何提示（if-no-files-found 只对整条 path 生效）
+      - uses: actions/upload-artifact@v4
+        if: matrix.goos == 'windows'
+        with:
+          name: windows-zip
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: 发布
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 建 Release 并上传
+        env:
+          # GITHUB_TOKEN 由 runner 注入，这里用的是默认环境变量
+          # GITHUB_REF_NAME / GITHUB_REPOSITORY，不插值任何事件字段
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*

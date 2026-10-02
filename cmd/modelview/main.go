@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"slices"
 	"strings"
 
@@ -28,10 +29,10 @@ func main() {
 
 func run() error {
 	var (
-		asJSON  = flag.Bool("json", false, "以 JSON 输出（非交互）")
-		version = flag.Bool("version", false, "打印版本后退出")
-		asStats = flag.Bool("stats", false, "计算张量数值统计（慢，会读全部张量数据）")
-		noCache = flag.Bool("no-cache", false, "禁用缓存读写")
+		asJSON      = flag.Bool("json", false, "以 JSON 输出（非交互）")
+		showVersion = flag.Bool("version", false, "打印版本后退出")
+		asStats     = flag.Bool("stats", false, "计算张量数值统计（慢，会读全部张量数据）")
+		noCache     = flag.Bool("no-cache", false, "禁用缓存读写")
 		// 0 表示不采样（读完整个张量）；默认 1e7 个元素约 40 MB
 		sampleLimit = flag.Int("sample-limit", analyze.DefaultSampleLimit,
 			"单张量统计的采样上限（元素数），0 表示不采样（会读完整个张量，"+
@@ -73,8 +74,8 @@ func run() error {
 		}
 	}
 
-	if *version {
-		fmt.Println("modelview dev")
+	if *showVersion {
+		fmt.Println("modelview " + version())
 		return nil
 	}
 
@@ -275,6 +276,69 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// readBuildInfo 是 debug.ReadBuildInfo 的间接层。
+//
+// 存在的唯一理由是**可测**。测试二进制里 Main.Version 恒为 "(devel)"、
+// 也没有 vcs.revision（实测确认过），所以"版本号是从构建信息推出来的"
+// 这件事在端到端层面**不可观测**：把实现换成一句硬编码的常量，
+// `--version` 打出来的字符串一模一样，任何断言都区分不了。
+// 留一个可替换的入口，测试才能把构造好的构建信息喂进**生产路径上
+// 真的会被调用的那个函数**（而不是喂给一个只有测试在用的纯函数）。
+var readBuildInfo = debug.ReadBuildInfo
+
+// version 返回 --version 要打给用户的版本号。
+//
+// 原先这里是一句硬编码的 "dev"：发布出去之后，用户报 bug 时给出的版本
+// 永远对应不到任何一个提交。
+//
+// **有版本号就只报版本号，没有才去拼提交号**。本仓库里 `go build`
+// 出来的 Main.Version 不是 "(devel)"，而是 Go 合成的伪版本
+// `v0.0.0-20261002132043-ec74684ce6d7`（实测），里面已经含了提交 ——
+// 再附一个 " (ec74684)" 就是同一件事说两遍，实测打出过
+// `modelview v0.0.0-20261002132043-ec74684ce6d7 (ec74684, dirty)`。
+func version() string {
+	bi, ok := readBuildInfo()
+	if !ok {
+		// 拿不到构建信息（极少见）时退到 "dev"，不编一个版本号出来
+		return "dev"
+	}
+	v := bi.Main.Version
+	if v != "" && v != "(devel)" && !isPseudoVersion(v) {
+		return v
+	}
+	// 本地构建：报 bug 时"哪个提交、有没有改过"比"什么版本"有用
+	rev := buildSetting(bi, "vcs.revision")
+	if rev == "" {
+		return "dev"
+	}
+	if len(rev) > 7 {
+		rev = rev[:7]
+	}
+	if buildSetting(bi, "vcs.modified") == "true" {
+		rev += ", dirty"
+	}
+	return "dev (" + rev + ")"
+}
+
+// isPseudoVersion 判断这是不是 Go 给"没有 tag 的提交"合成的伪版本。
+//
+// **只认最常见的 `v0.0.0-` 那一种**（仓库还没打过任何 tag 时）。
+// tag 之后构建的伪版本形如 `v1.2.4-0.2026…-abc123`，这里放它过去 ——
+// 那种写法本身就说明了"在 v1.2.3 之后、某个提交上"，不翻译反而信息更多。
+func isPseudoVersion(v string) bool {
+	return strings.HasPrefix(v, "v0.0.0-")
+}
+
+// buildSetting 取一条构建设置，没有就返回空串。
+func buildSetting(bi *debug.BuildInfo, key string) string {
+	for _, s := range bi.Settings {
+		if s.Key == key {
+			return s.Value
+		}
+	}
+	return ""
 }
 
 // warnNoSample 在 `--sample-limit 0`（不采样）时先给出预估峰值。
