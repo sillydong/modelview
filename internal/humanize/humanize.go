@@ -20,6 +20,12 @@ import (
 )
 
 // Bytes 用 1024 进制（KiB/MiB/GiB/TiB）缩写字节数，与文件管理器一致。
+//
+// **进位的判据要用四舍五入后的值**：v 是 1023.9980 时 `v < unit` 为真，
+// 但 %.2f 会把它打成 "1024.00 KiB" —— 尾数写出 1024 就不是这套单位制了。
+// 实测原实现：Bytes(1048575) 得到 "1024.00 KiB"、Bytes(1073741823) 得到
+// "1024.00 MiB"、Bytes((1<<50)-1) 得到 "1024.00 TiB"。文件大小是任意
+// 整数，这类边界并不罕见，而三处界面（CLI/TUI/模型库）都用它。
 func Bytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -29,7 +35,7 @@ func Bytes(n int64) string {
 	v := float64(n)
 	for _, u := range units {
 		v /= unit
-		if v < unit {
+		if math.Round(v*100)/100 < unit {
 			return fmt.Sprintf("%.2f %s", v, u)
 		}
 	}
