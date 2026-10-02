@@ -841,3 +841,138 @@ func TestViews_帮助栏问号的两个方向(t *testing.T) {
 		}
 	}
 }
+
+// **扫描是后台的**：中途推入别的视图（速查表、张量列表）不能把链弄断。
+//
+// 这条以前是坏的：消息只交给栈顶，栈顶换人之后那条结果落进了不处理它的
+// 视图 —— 链停在原地，而 ModelView 那边 `scanning` 还是 true、进度行继续
+// 写着"正在扫描…"，冻在一个数字上（真终端实测：扫描中按 `?`，回来时停在
+// 7/434）。现在根视图按"谁是 ModelView"路由（routeToModelView），与
+// popToMsg 同一个理由：消息该归谁，由"谁是那个视图"决定，不是由"谁恰好
+// 在栈顶"决定。
+//
+// 三件事都要验：链没断（还返回下一条命令）、**不在栈顶的那一层也在推进**、
+// 回到那一屏时看到的是推进后的终态而不是冻住的数字。
+func TestApp_扫描在后台继续推进(t *testing.T) {
+	model := fakeModel()
+	v := loadModelView(model)
+	v.scan = fakeScan(nil)
+	root := New(fakeView{title: "根"})
+	pushed, _ := root.Update(pushMsg{v: v})
+	board := pushed.(Model)
+
+	// 按 a 起步：命令先拿在手里不执行，模拟"已经派发出去、还没回来"
+	next, scanCmd := board.Update(key(keyScanAll))
+	board = next.(Model)
+	if scanCmd == nil {
+		t.Fatal("按 a 没有起步")
+	}
+
+	// 用户这时候按 `?` 打开速查表（链正在等第 0 张的结果）
+	next, pushRef := board.Update(key(keyHelp))
+	board = runCmd(t, next.(Model), pushRef)
+	if len(board.stack) != 3 {
+		t.Fatalf("栈深 = %d, want 3（根 + ModelView + 速查表）", len(board.stack))
+	}
+
+	// 第 0 张的结果回来：**要送到栈里那个 ModelView**，链继续
+	next, nextCmd := board.Update(scanCmd())
+	board = next.(Model)
+	if nextCmd == nil {
+		t.Fatal("结果落在速查表上、链断了 —— 这条消息没有送到 ModelView")
+	}
+	if inner := board.stack[1].(ModelView); inner.scanDone != 1 {
+		t.Errorf("不在栈顶的那一层进度 = %d, want 1", inner.scanDone)
+	}
+
+	// 第 1 张（最后一张）：链应当自己停
+	next, nextCmd = board.Update(nextCmd())
+	board = next.(Model)
+	if nextCmd != nil {
+		t.Error("扫完最后一张还在调度")
+	}
+
+	// 回到模型视图：看到的是**推进之后**的终态，不是冻住的 0/2
+	next, _ = board.Update(key("esc"))
+	board = next.(Model)
+	mv, ok := board.stack[len(board.stack)-1].(ModelView)
+	if !ok {
+		t.Fatalf("栈顶是 %T, want ModelView", board.stack[len(board.stack)-1])
+	}
+	if mv.scanDone != len(model.Tensors) {
+		t.Errorf("回到这一屏时进度 = %d, want %d —— 后台没有推进",
+			mv.scanDone, len(model.Tensors))
+	}
+	if out := mv.View(120, 20); !strings.Contains(out, "扫描完成 2/2") {
+		t.Errorf("回到这一屏看到的不是终态:\n%s", out)
+	}
+}
+
+// 栈里没有 ModelView 时（用户已经按 Esc 退回模型库）扫描消息**丢弃**：
+// 那条链的宿主已经不在了，屏幕上也没有进度行 —— 没有东西可续。
+// 丢弃不是静默吞错：这里要的是"不崩、不返回命令、也不弹栈"。
+func TestApp_栈里没有ModelView时扫描消息被丢弃(t *testing.T) {
+	v := loadModelView(fakeModel())
+	v.scan = fakeScan(nil)
+	root := New(fakeView{title: "根"})
+	pushed, _ := root.Update(pushMsg{v: v})
+	board := pushed.(Model)
+	next, scanCmd := board.Update(key(keyScanAll))
+	board = next.(Model)
+
+	// 退回模型库：ModelView 连同它的扫描状态一起没了
+	next, _ = board.Update(key("esc"))
+	board = next.(Model)
+	if len(board.stack) != 1 {
+		t.Fatalf("栈深 = %d, want 1（退回模型库）", len(board.stack))
+	}
+
+	next, cmd := board.Update(scanCmd())
+	board = next.(Model)
+	if cmd != nil {
+		t.Error("没有 ModelView 了却返回了命令 —— 链会飘在栈外继续跑")
+	}
+	if len(board.stack) != 1 {
+		t.Errorf("栈深 = %d, want 1 —— 丢弃不该动栈", len(board.stack))
+	}
+}
+
+// **路由不放松模型认领**：路由是按"谁是 ModelView"送消息的，它不看这条
+// 消息属于哪个模型 —— 上一轮那条链的残影（用户退回模型库、换了模型再进来）
+// 照样会送到这一层的 ModelView 上。所以 `msg.m != v.m` 那一条判据是这条
+// 路由的**安全前提**，不许因为"反正送到了正确的图层"而删掉。
+func TestApp_路由不放松模型认领(t *testing.T) {
+	// 变量名不能叫 model：那会遮住 model 包（这个测试要构造 model.Stats）
+	mm := fakeModel()
+	v := loadModelView(mm)
+	v.scan = fakeScan(nil)
+	root := New(fakeView{title: "根"})
+	pushed, _ := root.Update(pushMsg{v: v})
+	board := pushed.(Model)
+
+	next, scanCmd := board.Update(key(keyScanAll))
+	board = next.(Model)
+	if scanCmd == nil {
+		t.Fatal("按 a 没有起步")
+	}
+
+	// 另一个模型的链上飞回来的消息（里面装着一份看着很正常的结果）
+	foreign := fakeModelWithTensors(3)
+	next, cmd := board.Update(batchScannedMsg{
+		m: foreign, idx: 0,
+		stats: &model.Stats{Count: 42},
+		quant: &model.QuantInfo{Scheme: "Q4_K"},
+	})
+	board = next.(Model)
+
+	if cmd != nil {
+		t.Error("认不出的消息却让链继续了 —— 那会走出来两条链")
+	}
+	mv := board.stack[len(board.stack)-1].(ModelView)
+	if mv.scanDone != 0 {
+		t.Errorf("进度 = %d, want 0 —— 别的模型的结果被算进来了", mv.scanDone)
+	}
+	if mm.Tensors[0].Stats != nil {
+		t.Error("别的模型的结果合并进了这个模型的张量")
+	}
+}

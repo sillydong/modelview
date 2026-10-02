@@ -252,6 +252,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 不跑的话"进模型视图"会永远停在"正在解析…"
 		return m, msg.v.Init()
 
+	case batchScannedMsg:
+		// **扫描消息不归栈顶**：用户可能正开着速查表或张量列表在看，
+		// 它们不处理这条消息，链会断在那里。理由与栈里没有 ModelView
+		// 时的取舍写在 routeToModelView 上。
+		return m.routeToModelView(msg)
+
 	case popToMsg:
 		for len(m.stack) > 1 {
 			if _, ok := m.stack[len(m.stack)-1].(ModelView); ok {
@@ -274,6 +280,35 @@ func (m Model) forward(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.top().Update(msg)
 	m.stack[i] = next
 	return m, cmd
+}
+
+// routeToModelView 把**只属于 ModelView** 的消息送给栈里那个 ModelView，
+// 而不是栈顶。
+//
+// 栈顶可能是用户中途推上来的别的视图（按 `?` 开速查表、Enter 进张量列表），
+// 它不处理这条消息 —— 消息被咽掉，ModelView 那条自续的链就断在那里，
+// 而它的 `scanning` 还是 true、进度行继续写着"正在扫描…"，**冻在一个
+// 数字上不动**（实测：扫描中按 `?`，回来时停在第 7 张）。
+// 扫描是**后台**的（spec §8），后台就不该因为用户翻到别的屏而停。
+//
+// 这与 popToMsg 是同一个理由：**消息该归谁，由"谁是那个视图"决定，
+// 不是由"谁恰好在栈顶"决定**。区别是 popToMsg 会弹栈，这里只转发。
+//
+// 栈里没有 ModelView 时**丢弃**：那条链的宿主已经不在栈上了（用户按 Esc
+// 退回了模型库），它的状态随视图一起没了 —— 屏幕上没有进度行、没有东西
+// 可续，也没有东西需要清。交给栈顶是同一个结果（没有别的视图处理
+// 这个消息类型），但那样会把"这条消息只归 ModelView"这条规则藏起来。
+func (m Model) routeToModelView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	for i := len(m.stack) - 1; i >= 0; i-- {
+		mv, ok := m.stack[i].(ModelView)
+		if !ok {
+			continue
+		}
+		next, cmd := mv.Update(msg)
+		m.stack[i] = next
+		return m, cmd
+	}
+	return m, nil
 }
 
 func (m Model) pop() (tea.Model, tea.Cmd) {
