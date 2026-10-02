@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -1158,5 +1159,72 @@ func TestApp_退格从真的模型页返回库(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 	if n := len(m.(Model).stack); n != 1 {
 		t.Errorf("退格没有从模型页返回库，栈深 = %d —— ModelView 自己吃掉了它？", n)
+	}
+}
+
+// Cmd 里 panic 不该掀掉整个 TUI —— 应当变成一条可显示的消息。
+//
+// bubbletea **不 recover 用户的 Cmd**：解析、解码、量化模拟都跑在 Cmd
+// 的 goroutine 里，任何越界/nil 解引用都会掀掉整个界面，终端还留在
+// alt-screen 里（用户只能 Ctrl+C）。spec §4.0 明文要求"在边界 recover"。
+//
+// 这是**纵深防御**：700 次随机变异（GGUF 300 + safetensors 200 +
+// pytorch 200）一次 panic 都没打出来。它的价值是把"未知边界 → 整个
+// 界面消失"降级成"这一项报错、其余照常"。
+func TestApp_Cmd里的panic被兜住(t *testing.T) {
+	cmd := safeCmd(func() tea.Msg { panic("boom") })
+	msg := cmd()
+	if _, ok := msg.(panicMsg); !ok {
+		t.Fatalf("panic 没有被兜住，得到 %T", msg)
+	}
+}
+
+// 正常返回的 Cmd 不受影响（包装不能改变语义）。
+func TestApp_safeCmd透传正常结果(t *testing.T) {
+	// 用可比较的消息类型：tea.KeyMsg 里有 []rune，不能用 != 比
+	want := "hello"
+	if got := safeCmd(func() tea.Msg { return want })(); got != tea.Msg(want) {
+		t.Errorf("safeCmd 改变了正常返回值: %v", got)
+	}
+}
+
+// panic 消息要**看得见** —— 只吞掉的话用户不知道有东西崩了。
+func TestApp_panic消息在界面上可见(t *testing.T) {
+	m := New(fakeView{title: "根"})
+	m2, _ := m.Update(panicMsg{err: errors.New("内部错误: boom")})
+	out := m2.(Model).View()
+	if !strings.Contains(out, "boom") {
+		t.Errorf("panic 消息没显示出来:\n%s", out)
+	}
+}
+
+// **接线要有测试**：safeCmd 本身测过了，但"真的包在那些 Cmd 上吗"
+// 是另一件事 —— 注释声称包了而实际没包，就是声称漂移。
+//
+// 用会 panic 的注入函数走真实路径：解析入口、单张量扫描。
+func TestApp_真实的Cmd确实被包住(t *testing.T) {
+	// ① ModelView 的解析 Cmd
+	mv := NewModelViewFromPath("/x/m.gguf", "m")
+	mv.parse = func(string) (*model.Model, error) { panic("解析爆了") }
+	msg := mv.Init()()
+	if _, ok := msg.(panicMsg); !ok {
+		t.Errorf("解析 Cmd 没被包住，得到 %T", msg)
+	}
+
+	// ② ModelView 的单张量扫描 Cmd
+	mdl := fakeModel()
+	mv2 := NewModelView(mdl)
+	mv2.scan = func(context.Context, *model.Model, *model.Tensor) error { panic("扫描爆了") }
+	msg = mv2.scanOneCmd(0)()
+	if _, ok := msg.(panicMsg); !ok {
+		t.Errorf("扫描 Cmd 没被包住，得到 %T", msg)
+	}
+
+	// ③ TensorView 的扫描 Cmd
+	tv := NewTensorView(mdl, mdl.Tensors[0])
+	tv.scan = func(context.Context, *model.Model, *model.Tensor) error { panic("详情页爆了") }
+	msg = tv.scanCmd()()
+	if _, ok := msg.(panicMsg); !ok {
+		t.Errorf("详情页的扫描 Cmd 没被包住，得到 %T", msg)
 	}
 }

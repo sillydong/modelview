@@ -112,9 +112,9 @@ func (l Library) Title() string { return "modelview · 模型库" }
 // 一次读完再显示的话，HF 缓存里几百个文件会让用户盯着空屏几十秒。
 func (l Library) Init() tea.Cmd {
 	scan := l.scan
-	return func() tea.Msg {
+	return safeCmd(func() tea.Msg {
 		return libraryLoadedMsg{res: scan(context.Background(), discover.Options{})}
-	}
+	})
 }
 
 // Modal 恒为 false：模型库没有输入框，q 与 Esc 照旧归根视图。
@@ -231,10 +231,10 @@ func (l Library) fillCmd(i int) tea.Cmd {
 	it := l.items[i]
 	fill := l.fill
 	gen := l.gen
-	return func() tea.Msg {
+	return safeCmd(func() tea.Msg {
 		fill(&it)
 		return itemFilledMsg{index: i, item: it, gen: gen}
-	}
+	})
 }
 
 func (l Library) Help() []string {

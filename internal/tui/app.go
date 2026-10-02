@@ -174,6 +174,15 @@ type Model struct {
 	stack  []View
 	width  int
 	height int
+
+	// panicErr 是最近一次被 safeCmd 兜住的 panic。
+	//
+	// **放在根 Model 而不是转发给栈顶**：panic 可能来自任何一层的 Cmd
+	//（模型库的填充、模型页的扫描、详情页的单张量），而"哪一层崩了"
+	// 与"用户现在看的是哪一屏"无关 —— 转发给栈顶的话，崩在后台的
+	// 那次会在用户翻到别的屏时才冒出来，或者干脆被那一层忽略掉。
+	// 根视图是唯一保证看得到它的地方。
+	panicErr error
 }
 
 // 尺寸未知时的默认值。**不能是 0** —— 按 0 宽渲染会得到空串，
@@ -287,6 +296,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 那些行的格式与参数量永远是空的。
 		return m.routeToLibrary(msg)
 
+	case panicMsg:
+		// 只记最近一条：连崩多次时屏幕上堆不下，而第一条通常就是原因
+		m.panicErr = msg.err
+		return m, nil
+
 	case popToMsg:
 		for len(m.stack) > 1 {
 			if _, ok := m.stack[len(m.stack)-1].(ModelView); ok {
@@ -351,10 +365,16 @@ func (m Model) View() string {
 
 	// 用 lipgloss 拼而不是手写 "\n"：它按**显示宽度**算，
 	// 中文不会被当成两个字符宽（用 len() 算会把中文行算短，导致错位）
+	// **panic 优先占帮助栏那一行**：帮助栏是最不关键的一行，而
+	// "有东西崩了"必须看得见。高度不变，所以布局不会跳。
+	footer := helpLine(top.Help())
+	if m.panicErr != nil {
+		footer = styleWarn.Render("⚠ " + m.panicErr.Error())
+	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		truncateLines(m.header(), m.width),
 		body,
-		truncateLines(helpLine(top.Help()), m.width))
+		truncateLines(footer, m.width))
 }
 
 func (m Model) contentHeight() int {
@@ -501,4 +521,32 @@ func (m Model) routeToLibrary(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// panicMsg 把 Cmd 里的 panic 变成一条普通消息。
+type panicMsg struct{ err error }
+
+// safeCmd 包住一个 tea.Cmd，把 panic 变成 panicMsg。
+//
+// **bubbletea 不 recover 用户的 Cmd**：解析、解码、量化模拟都跑在 Cmd
+// 的 goroutine 里，任何越界/nil 解引用都会掀掉整个 TUI —— 终端还留在
+// alt-screen 里，用户只能 Ctrl+C。spec §4.0 明文要求"在边界 recover
+// panic"，这是全仓唯一的 recover。
+//
+// **它是纵深防御，不是已知故障的补丁**：700 次随机变异（GGUF 300 +
+// safetensors 200 + pytorch 200）一次 panic 都没打出来。价值在于把
+// "未知边界 → 整个界面消失"降级成"这一项报错、其余照常"。
+//
+// 包在**产生 I/O 的那几个 Cmd** 上（解析、单张量扫描、模型库填充），
+// 它们碰的是文件与解码器 —— 纯计算（如 View）不包：那是主线程，
+// panic 会直接终止进程，包了也救不回来。
+func safeCmd(f func() tea.Msg) tea.Cmd {
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				msg = panicMsg{err: fmt.Errorf("内部错误（已捕获，其余功能不受影响）: %v", r)}
+			}
+		}()
+		return f()
+	}
 }

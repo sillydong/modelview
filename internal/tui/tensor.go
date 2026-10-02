@@ -139,13 +139,13 @@ func (v TensorView) Modal() bool { return false }
 func (v TensorView) scanCmd() tea.Cmd {
 	m, tn, scan := v.m, v.tn, v.scan
 	cp := *tn
-	return func() tea.Msg {
+	return safeCmd(func() tea.Msg {
 		err := scan(context.Background(), m, &cp)
 		return tensorScannedMsg{
 			name: tn.Name, stats: cp.Stats, quant: cp.Quant,
 			sims: cp.QuantSims, err: err,
 		}
-	}
+	})
 }
 
 // tick 造一条计时消息。

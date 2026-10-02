@@ -177,7 +177,7 @@ func (v ModelView) Init() tea.Cmd {
 	path := v.pendingPath
 	name := v.name
 	parse := v.parse
-	return func() tea.Msg {
+	return safeCmd(func() tea.Msg {
 		if parse == nil {
 			// **报错而不是崩**：nil 解引用会掀掉整个 TUI，而这只可能是
 			// 接线漏了（Library 没附上 parse）。做成一条能显示的
@@ -194,7 +194,7 @@ func (v ModelView) Init() tea.Cmd {
 			m.Name = name
 		}
 		return modelLoadedMsg{m: m, err: err}
-	}
+	})
 }
 
 // Modal 恒为 false：模型概览不输入文字，q 与 Esc 照旧归根视图。
@@ -406,13 +406,13 @@ func (v ModelView) canScan() bool { return v.m != nil && len(v.m.Tensors) > 0 }
 func (v ModelView) scanOneCmd(i int) tea.Cmd {
 	m, scan := v.m, v.scan
 	cp := *m.Tensors[i]
-	return func() tea.Msg {
+	return safeCmd(func() tea.Msg {
 		err := scan(context.Background(), m, &cp)
 		return batchScannedMsg{
 			m: m, idx: i, err: err,
 			stats: cp.Stats, quant: cp.Quant, sims: cp.QuantSims,
 		}
-	}
+	})
 }
 
 // scanHelp 是 `a` 那一格的帮助文字。
