@@ -104,6 +104,13 @@ func run() error {
 	// 读起来像"缺参数已经处理了"，实际永远不会触发。
 	// 与 scanLine 里那段被删掉的兜底是同一类。
 
+	// **目录参数走目录分支**：直接丢给 parser.Parse 会得到
+	// "读取文件头: read /tmp/x: is a directory" 这种对用户没有帮助的
+	// 报错，而 spec §3 明列了 `modelview <dir>`。
+	if st, err := os.Stat(flag.Arg(0)); err == nil && st.IsDir() {
+		return runDir(context.Background(), flag.Arg(0), *asJSON)
+	}
+
 	m, err := parser.Parse(flag.Arg(0))
 	if err != nil {
 		return err

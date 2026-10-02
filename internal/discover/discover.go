@@ -67,7 +67,16 @@ type Path struct {
 }
 
 // KV 是一条附加信息。
-type KV struct{ Key, Value string }
+//
+// **json tag 不能省**：省掉会打出 {"Key":…,"Value":…}，而同一份 JSON
+// 里 Item 的其它字段全是 snake_case（source/name/path/size/format/
+// arch/param_count）—— 消费方要为这一个字段破例。
+// 与 model.Model 里那句"键名漂移在 map 里既无编译错误也无测试失败"
+// 是同一类顾虑。
+type KV struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
 
 // Item 是一个被发现的模型。
 type Item struct {
@@ -354,4 +363,37 @@ func FillAll(ctx context.Context, items []Item) []Item {
 		Fill(&items[i])
 	}
 	return items
+}
+
+// ScanDir 递归扫描**任意目录**下的模型文件，返回条目与错误清单。
+//
+// 与 Scan 的分工：那个只看写死的十几个已知路径（spec §7 那张表），
+// 这个是"就扫这里"。spec §3 把 `modelview <dir>` 与 `modelview scan`
+// 并列，对应的就是这两条。
+//
+// **复用 scanDir 而不是自己走文件树**：模型后缀的判据、递归深度上限、
+// 要跳过的目录名（.git / node_modules / 缓存目录）都已经在那里，各写
+// 一份迟早分叉 —— 而分叉的表现是"同一个目录，两条命令列出不同的文件"，
+// 用户无从判断哪个是对的。
+//
+// 来源标成 generic：这个目录不在已知路径表里，标成别的是撒谎。
+//
+// **"失败"与"空目录"必须由两个信号分别表达**：
+//   - errs 非空 = 扫描失败，此时 items 是 nil
+//   - errs 为空 = 扫描成功，items 是**非 nil** 的切片（空目录就是空切片）
+//
+// 不这么做的话调用方只能拿 `items == nil` 当失败判据，而空目录的
+// items 也是 nil —— 实测过：空目录会打出"扫描失败"，用户以为路径写错了。
+// 与 model.Tensor 的 SizeUnknown、MetaKV 空切片的取舍是同一个道理：
+// 哨兵值必须显式且唯一。
+func ScanDir(ctx context.Context, root string) ([]Item, []string) {
+	items, err := scanDir(ctx, root, SourceGeneric)
+	if err != nil {
+		return nil, []string{err.Error()}
+	}
+	if items == nil {
+		items = []Item{}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+	return items, nil
 }
