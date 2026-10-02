@@ -80,11 +80,20 @@ func run() error {
 
 	// 无参数或显式 scan 都进模型库。
 	//
-	// **--json 走非交互**：JSON 是一个整体，不能流式拼，
-	// 更不该在管道里弹出一个 TUI（那会把 ANSI 转义混进 jq 的输入）。
+	// **--json 与非终端都走非交互**：JSON 是一个整体，不能流式拼；
+	// 而重定向到管道或文件时 bubbletea 拿不到尺寸，画出来的东西是给
+	// 看不到它的人准备的，ANSI 转义还会混进 jq 的输入里。
+	//
+	// **非终端这条原来没有**：那时它落到 runTUI，被"交互界面需要终端"
+	// 挡回来 —— 于是 `modelview scan` 在管道/日志里完全用不了，
+	// 而 runScan 那段人类可读输出（含孤儿 blob 与未完成下载的提示）
+	// 已经写好、只被测试覆盖。
+	//
+	// 分流放在这里而不是让 runTUI 自己兜：runTUI 该做的就是"不能跑就
+	// 说清楚为什么"，而"非终端下换成什么"是入口的决策。
 	if flag.NArg() == 0 || flag.Arg(0) == "scan" {
-		if *asJSON {
-			return runScan(context.Background(), true)
+		if *asJSON || !isTerminal(os.Stdout) {
+			return runScan(context.Background(), *asJSON)
 		}
 		return runTUI()
 	}

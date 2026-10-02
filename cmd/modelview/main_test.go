@@ -302,3 +302,47 @@ func TestRun_小模型不采样也不预警(t *testing.T) {
 		t.Errorf("小模型不该打预估（那是噪音）:\n%s", got)
 	}
 }
+
+// 非终端下 `scan` 要走人类可读的非交互输出，而不是报"交互界面需要终端"。
+//
+// 实测原来会报错 —— 于是管道/日志里完全用不了，而那段输出（含孤儿 blob
+// 与未完成下载的提示，约 60 行）已经写好、只被测试覆盖。
+func TestRun_scan在非终端下给人类可读输出(t *testing.T) {
+	r, w, _ := os.Pipe()
+	oldOut := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldOut })
+
+	resetFlags(t, "scan")
+	err := run()
+	_ = w.Close()
+	got, _ := io.ReadAll(r)
+
+	if err != nil {
+		t.Fatalf("非终端下 scan 报错了: %v", err)
+	}
+	if !strings.Contains(string(got), "模型") {
+		t.Errorf("没有人类可读输出:\n%s", got)
+	}
+}
+
+// 非终端下 --json scan 仍然是 JSON（不能因为分流改动而受影响）。
+func TestRun_scan非终端下json仍是json(t *testing.T) {
+	r, w, _ := os.Pipe()
+	oldOut := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldOut })
+
+	resetFlags(t, "--json", "scan")
+	err := run()
+	_ = w.Close()
+	got, _ := io.ReadAll(r)
+
+	if err != nil {
+		t.Fatalf("--json scan 报错了: %v", err)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(got, &v); err != nil {
+		t.Fatalf("不是合法 JSON: %v\n%s", err, got)
+	}
+}
