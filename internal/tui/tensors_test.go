@@ -461,3 +461,72 @@ func TestTensorsView_输入中文后过滤词完整(t *testing.T) {
 			v.filter, v.filter, "中")
 	}
 }
+
+// 统计失败的张量必须在列表里看得出来（spec §10：「该项标红」）。
+//
+// 原来只有一个全局的"失败 N"在进度行里 —— 用户知道有几张失败了，
+// 却不知道是哪张，得逐张点开才知道。
+//
+// **断言打在字符标记上，不是颜色上**：lipgloss 在非终端（测试、管道）
+// 下不出颜色，只比"渲染是否不同"的话这条测试在 CI 里恒假
+// （第一版就是这么写的，跑出来 plain == got）。所以标记是字符，
+// 颜色只是加强。
+func TestTensorsView_失败行要标出来(t *testing.T) {
+	m := &model.Model{Path: "x.gguf", Tensors: []*model.Tensor{
+		{Name: "cur", Dtype: model.DtypeF32, ParamCount: 8},
+		{Name: "bad", Dtype: model.DtypeF32, ParamCount: 8},
+		{Name: "clean", Dtype: model.DtypeF32, ParamCount: 8},
+	}}
+
+	v := NewTensorsView(m) // 光标在 cur
+	v.failed = map[string]bool{"bad": true}
+	lines := map[string]string{}
+	for _, l := range strings.Split(v.View(80, 24), "\n") {
+		for _, n := range []string{"cur", "bad", "clean"} {
+			if strings.Contains(l, n) {
+				lines[n] = l
+			}
+		}
+	}
+
+	// 两列各管一件事：第一列光标、第二列失败
+	if !strings.HasPrefix(lines["cur"], "▸ ") {
+		t.Errorf("光标行没有光标标记：%q", lines["cur"])
+	}
+	if !strings.HasPrefix(lines["bad"], " ⚠") {
+		t.Errorf("失败的行没有失败标记：%q", lines["bad"])
+	}
+	if !strings.HasPrefix(lines["clean"], "  ") {
+		t.Errorf("没失败的行被标了：%q", lines["clean"])
+	}
+}
+
+// 光标停在失败的那一行时**两个标记都要在**（两列各管一件事）。
+//
+// 第一版写成 `else if`（光标优先），于是**单张量模型里那张失败的行
+// 永远看不到标记** —— 列表刚打开时光标必然在第 0 行。真终端实测发现的。
+func TestTensorsView_光标与失败标记并存(t *testing.T) {
+	m := &model.Model{Path: "x.gguf", Tensors: []*model.Tensor{
+		{Name: "bad", Dtype: model.DtypeF32, ParamCount: 8},
+	}}
+	v := NewTensorsView(m) // 光标在第 0 行
+	v.failed = map[string]bool{"bad": true}
+	for _, l := range strings.Split(v.View(80, 24), "\n") {
+		if strings.Contains(l, "bad") && !strings.HasPrefix(l, "▸⚠") {
+			t.Errorf("光标与失败标记应当并存：%q", l)
+		}
+	}
+}
+
+// 没有失败时不留任何痕迹（空 map 与 nil 一样）。
+func TestTensorsView_没有失败时不标(t *testing.T) {
+	m := &model.Model{Path: "x.gguf", Tensors: []*model.Tensor{
+		{Name: "a", Dtype: model.DtypeF32, ParamCount: 8},
+	}}
+	plain := NewTensorsView(m).View(80, 24)
+	empty := NewTensorsView(m)
+	empty.failed = map[string]bool{}
+	if empty.View(80, 24) != plain {
+		t.Error("空的失败集合不该改变渲染")
+	}
+}

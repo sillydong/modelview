@@ -765,8 +765,8 @@ func TestModelView_a单张失败不中断(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("第一张失败就断了链 —— 一张坏张量不该让整个模型扫不下去")
 	}
-	if v.scanDone != 1 || v.scanFailed != 1 {
-		t.Errorf("进度/失败 = %d/%d, want 1/1", v.scanDone, v.scanFailed)
+	if v.scanDone != 1 || len(v.failed) != 1 {
+		t.Errorf("进度/失败 = %d/%d, want 1/1", v.scanDone, len(v.failed))
 	}
 	// **失败的那一张什么都不合并**：副本里那半份结果不落地 ——
 	// 落地的话详情页会显示"只有统计、没有量化诊断"的半份数据
@@ -783,8 +783,8 @@ func TestModelView_a单张失败不中断(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("第二张扫完还在调度")
 	}
-	if v.scanFailed != 1 {
-		t.Errorf("失败计数 = %d, want 1", v.scanFailed)
+	if len(v.failed) != 1 {
+		t.Errorf("失败计数 = %d, want 1", len(v.failed))
 	}
 	if v.m.Tensors[1].Stats == nil {
 		t.Error("前一张失败之后，后面那张没被扫")
@@ -981,8 +981,8 @@ func TestModelView_a失败的结果不清掉详情页的结果(t *testing.T) {
 	if v.m.Tensors[0].Quant == nil {
 		t.Error("带失败的旧副本把详情页已经算好的量化诊断清掉了")
 	}
-	if v.scanFailed != 1 {
-		t.Errorf("失败计数 = %d, want 1", v.scanFailed)
+	if len(v.failed) != 1 {
+		t.Errorf("失败计数 = %d, want 1", len(v.failed))
 	}
 }
 
@@ -1091,5 +1091,48 @@ func TestModelView_r键在没模型时无动作(t *testing.T) {
 	v = next.(ModelView)
 	if v.scanning {
 		t.Error("模型还没解析出来就进入了扫描中")
+	}
+}
+
+var errFake = errors.New("模拟失败")
+
+// 失败名单必须传到张量列表 —— 不传的话标红那一栏永远是空的，
+// 而 ModelView 是**唯一**知道哪张扫失败了的视图。
+func TestModelView_失败名单传给张量列表(t *testing.T) {
+	m := fakeModel()
+	v := NewModelView(m)
+	v.scan = func(context.Context, *model.Model, *model.Tensor) error { return errFake }
+
+	// 扫第一张，让它失败
+	next, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	v = next.(ModelView)
+	next, _ = v.Update(batchScannedMsg{m: m, idx: 0, err: errFake})
+	v = next.(ModelView)
+	if len(v.failed) != 1 {
+		t.Fatalf("失败名单 = %v, want 1 个", v.failed)
+	}
+
+	// 推到张量列表那一栏并按 Enter
+	for range int(sectionTensors) {
+		next, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		v = next.(ModelView)
+	}
+	next, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = next.(ModelView)
+	if cmd == nil {
+		t.Fatal("Enter 应当推出张量列表")
+	}
+	msg := cmd()
+	push, ok := msg.(pushMsg)
+	if !ok {
+		t.Fatalf("期望 pushMsg，得到 %T", msg)
+	}
+	tv, ok := push.v.(TensorsView)
+	if !ok {
+		t.Fatalf("推的不是 TensorsView，是 %T", push.v)
+	}
+	if len(tv.failed) != len(v.failed) {
+		t.Errorf("列表拿到的失败名单 = %v，ModelView 手里的是 %v —— 没传过去",
+			tv.failed, v.failed)
 	}
 }

@@ -118,9 +118,15 @@ type ModelView struct {
 	//     所以取消之后按 a 是重新开始，不是"接着取消"；
 	//   - 取消之后进度行整行消失（用户自己的动作，不需要收尾信号），
 	//     不用再存一个"取消过"的标志。
-	scanning   bool
-	scanDone   int
-	scanFailed int
+	scanning bool
+	scanDone int
+
+	// failed 是**统计失败**的张量名集合。
+	//
+	// 与进度行那句"失败 N"是同一个事实的两种表达，所以计数改成
+	// `len(v.failed)` 现算 —— 存两份迟早不一致（本仓"派生值不要
+	// 单独存"那条，栏目就是现算的）。它同时是张量列表标红的依据。
+	failed map[string]bool
 }
 
 // NewModelView 用一个已解析的模型造视图（测试与"已经有 m"的场景用）。
@@ -221,7 +227,12 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 			// 不落地等于保持"还没算"：NeedsWork 仍为真，再按一次 `a` 会重试。
 			// 失败**计数**要显示出来，否则用户不知道有张量没算出来
 			//（进度行里那句"失败 N"就是它唯一的显示位置）。
-			v.scanFailed++
+			// **要记名字，不只记个数**：只记个数的话进度行能说
+			// "失败 3"，但用户不知道是哪三张 —— 张量列表按这份名单标红。
+			if v.failed == nil {
+				v.failed = make(map[string]bool)
+			}
+			v.failed[v.m.Tensors[msg.idx].Name] = true
 		} else {
 			// **合并必须在主线程做** —— 这正是 scanOneCmd 先拷副本的原因。
 			tn := v.m.Tensors[msg.idx]
@@ -293,7 +304,7 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 			if !v.canScan() {
 				return v, nil
 			}
-			v.scanDone, v.scanFailed, v.scanning = 0, 0, true
+			v.scanDone, v.failed, v.scanning = 0, nil, true
 			return v, v.scanOneCmd(0)
 
 		case keyScanAll:
@@ -330,7 +341,7 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 			if !v.canScan() {
 				return v, nil
 			}
-			v.scanning, v.scanDone, v.scanFailed = true, 0, 0
+			v.scanning, v.scanDone, v.failed = true, 0, nil
 			return v, v.scanOneCmd(0)
 		case "enter":
 			// **模型还没解析完时 Enter 什么也不做**：这时推入的任何子视图
@@ -358,7 +369,10 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 			}
 			switch section(v.cursor) {
 			case sectionTensors:
-				return v, pushCmd(NewTensorsView(v.m))
+				tv := NewTensorsView(v.m)
+				// 名单要传下去：ModelView 是唯一知道哪张扫失败了的视图
+				tv.failed = v.failed
+				return v, pushCmd(tv)
 			case sectionRef:
 				return v, pushCmd(NewRefView(v.m))
 			}
@@ -442,16 +456,16 @@ func (v ModelView) scanLine() string {
 	switch {
 	case v.scanning:
 		line := fmt.Sprintf("正在扫描张量… %d/%d", v.scanDone, len(v.m.Tensors))
-		if v.scanFailed > 0 {
-			line += fmt.Sprintf(" · 失败 %d", v.scanFailed)
+		if n := len(v.failed); n > 0 {
+			line += fmt.Sprintf(" · 失败 %d", n)
 		}
 		return styleHint.Render(line + "（" + keyScanAll + " 取消）")
 	case v.scanDone > 0 && v.scanDone == len(v.m.Tensors):
 		line := fmt.Sprintf("扫描完成 %d/%d", v.scanDone, len(v.m.Tensors))
-		if v.scanFailed > 0 {
+		if n := len(v.failed); n > 0 {
 			// **失败那半句不能只是灰色小字**：它是这一屏唯一一处
 			// 说"有张量没算出来"的地方
-			return styleWarn.Render(line + fmt.Sprintf(" · 失败 %d", v.scanFailed))
+			return styleWarn.Render(line + fmt.Sprintf(" · 失败 %d", n))
 		}
 		return styleHint.Render(line)
 	}

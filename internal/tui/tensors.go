@@ -23,6 +23,13 @@ type TensorsView struct {
 	filtering bool   // 正在输入过滤词
 	filter    string // 当前过滤词（空表示不过滤）
 
+	// failed 是**统计失败**的张量名集合，由 ModelView 传进来（它是
+	// 唯一知道哪张扫失败了的视图）。spec §10 要求"该项标红"。
+	//
+	// 用名字而不是下标：两边看到的是同一份 m.Tensors，但过滤/排序之后
+	// 下标会错位 —— 而标错行比不标更糟。
+	failed map[string]bool
+
 	// dtype 非空时只显示这个类型的张量。
 	//
 	// 与 filter **互相独立**（不是二选一）：从"量化分布"跳过来时
@@ -355,15 +362,37 @@ func (v TensorsView) View(width, height int) string {
 // 名字列用字节截断而不是按显示宽度：见 humanize.Truncate 的说明
 // （中文名那列会偏宽，这是不引依赖的代价）。
 func (v TensorsView) row(i int, tn *model.Tensor, nameWidth int) string {
-	marker := "  "
+	// 标记区是**两列、各管一件事**：第一列光标、第二列失败。
+	//
+	// 原来写的是 `else if`（光标优先，失败标记让位），实测发现问题：
+	// 只有一张张量、而它恰好是失败的那张时，标记永远看不到 —— 而
+	// 单张量模型里那张**必然**在光标下（列表刚打开时光标在第 0 行）。
+	//
+	// **失败标记是字符不是颜色**：lipgloss 在非终端（测试、管道）下
+	// 不出颜色，只靠 styleWarn 的话这一行与普通行**逐字节相同** ——
+	// 测试断言不出来，色盲用户与重定向到文件的场景也看不出来。
+	cur, bad := " ", " "
 	if i == v.cursor {
-		marker = "▸ "
+		cur = "▸"
 	}
+	if v.failed[tn.Name] {
+		bad = "⚠"
+	}
+	marker := cur + bad
 	line := fmt.Sprintf("%s%-*s %-18s %-7s %10s", marker,
 		nameWidth, humanize.Truncate(tn.Name, nameWidth),
 		humanize.Dims(tn.Dims), string(tn.Dtype), humanize.Bytes(tn.ByteSize))
 	if i == v.cursor {
 		return styleSelected.Render(line)
+	}
+	// **统计失败的那一张要标出来**（spec §10：「该项标红」）。
+	// 只看进度行里那句"失败 N"的话，用户知道有几张失败却不知道是哪张，
+	// 得逐张点开才知道。
+	//
+	// 选中态优先：光标停在这一行时它已经足够醒目，再叠一层警示色
+	// 反而看不出选了哪个。
+	if v.failed[tn.Name] {
+		return styleWarn.Render(line)
 	}
 	return line
 }
