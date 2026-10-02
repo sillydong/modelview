@@ -270,6 +270,32 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 			v = v.move(-1)
 		case "down", "j":
 			v = v.move(1)
+		case keyRescan:
+			// spec §3：`r` = 强制重扫（忽略缓存）。
+			//
+			// **与 CLI 的 --no-cache 不是一回事**：analyze.One 按契约
+			// 根本不读写缓存（见 analyze/one.go 的说明），所以 TUI 里
+			// 从来没有"命中缓存"这回事。这里的"重扫"是**把已有结果
+			// 清掉再走一遍扫描链**，让用户能强制刷新。
+			//
+			// 清空而不只是重跑：留着旧结果的话，用户看到的是"按了
+			// 没反应，数字还是原来那个"，分不出"重算了且结果相同"
+			// 与"根本没重算"。
+			//
+			// 模型还没解析出来时什么都不做（`v.m == nil`）——
+			// 那时没有张量可清，也没有链可起。
+			if v.m == nil {
+				return v, nil
+			}
+			for _, tn := range v.m.Tensors {
+				tn.Stats, tn.Quant, tn.QuantSims = nil, nil, nil
+			}
+			if !v.canScan() {
+				return v, nil
+			}
+			v.scanDone, v.scanFailed, v.scanning = 0, 0, true
+			return v, v.scanOneCmd(0)
+
 		case keyScanAll:
 			// 扫描中再按一次 = 取消。**已经扫出来的结果留着**（One 是就地
 			// 填 tn.Stats，天然如此）—— 回滚等于把用户等的时间丢掉。
@@ -384,9 +410,11 @@ func (v ModelView) scanOneCmd(i int) tea.Cmd {
 func (v ModelView) scanHelp() string {
 	switch {
 	case v.scanning:
+		// 扫描中不列 `r`：那时 `a` 已经变成"取消"，再加一个能重启链的键
+		// 只会让用户分不清按哪个才停得下来
 		return keyScanAll + " 取消"
 	case v.canScan():
-		return keyScanAll + " 扫描全部"
+		return keyScanAll + " 扫描全部  " + keyRescan + " 重扫"
 	}
 	return ""
 }

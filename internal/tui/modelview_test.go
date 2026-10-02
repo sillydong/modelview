@@ -1056,3 +1056,40 @@ func TestModelView_未注入解析入口不崩(t *testing.T) {
 		t.Errorf("错误信息应说清是接线漏了，得到: %v", msg.err)
 	}
 }
+
+// spec §3 承诺 `r` = 强制重扫（忽略缓存）。模型页按 r 原来毫无反应。
+//
+// TUI 里没有"命中缓存"这回事（analyze.One 按契约不读写缓存），所以
+// 这里的语义是"把已有结果清掉再走一遍扫描链"—— 让用户能强制刷新。
+func TestModelView_r键清空结果并重扫(t *testing.T) {
+	m := fakeModel()
+	// 先造出"已经算过"的状态
+	for _, tn := range m.Tensors {
+		tn.Stats = &model.Stats{Count: tn.ParamCount}
+	}
+	v := NewModelView(m)
+	v.scan = func(context.Context, *model.Model, *model.Tensor) error { return nil }
+
+	next, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	v = next.(ModelView)
+
+	if !v.scanning {
+		t.Error("按 r 后没有进入扫描中")
+	}
+	for _, tn := range m.Tensors {
+		if tn.Stats != nil {
+			t.Errorf("%s 的结果没被清掉 —— 那就不是重扫，用户分不出「重算了"+
+				"结果相同」与「根本没重算」", tn.Name)
+		}
+	}
+}
+
+// 没有模型（还在解析）时按 r 不该崩，也不该进入扫描中。
+func TestModelView_r键在没模型时无动作(t *testing.T) {
+	v := NewModelViewFromPath("/x/m.gguf", "m")
+	next, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	v = next.(ModelView)
+	if v.scanning {
+		t.Error("模型还没解析出来就进入了扫描中")
+	}
+}
