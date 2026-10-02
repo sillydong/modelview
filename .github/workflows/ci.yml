@@ -48,7 +48,24 @@ jobs:
       # 语料相关的测试跳过（跳过数会打进日志），其余的必须全过。
       # 语料只有作者机器上有的测试，在这里是**验不了**的，
       # 这一点不假装：日志里的 SKIP 数就是它的可见边界。
-      - run: go test ./...
+      #
+      # 输出同时落盘并上传：失败时那份日志能在本机取下来看，
+      # 而跨平台的差异恰恰是最需要原文的一类问题（平台特有的假设
+      # 从代码里看不出来，只能看它实际怎么失败的）。
+      - name: go test
+        shell: bash
+        env:
+          OS_NAME: ${{ matrix.os }}
+        run: |
+          set -o pipefail
+          go test ./... 2>&1 | tee "test-${OS_NAME}.log"
+      - name: 上传测试输出
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log-${{ matrix.os }}
+          path: test-*.log
+          if-no-files-found: error
 
   race:
     name: race
