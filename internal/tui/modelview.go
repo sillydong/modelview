@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"github.com/sillydong/modelview/internal/analyze"
 	"github.com/sillydong/modelview/internal/humanize"
 	"github.com/sillydong/modelview/internal/model"
-	"github.com/sillydong/modelview/internal/parser"
 	"github.com/sillydong/modelview/internal/ref"
 )
 
@@ -88,6 +88,22 @@ type ModelView struct {
 	focus       focus
 	metaCursor  int
 
+	// parse 是文件解析入口，注入进来的。
+	//
+	// **不直接调 parser.Parse**：spec §4.0 要求 tui 只知道 model.Model、
+	// 不知道底层格式。界面层真正"读文件"的地方只有这一处，把它的来源
+	// 换成注入值之后，tui 就没有到 internal/parser 的**直接** import 了。
+	//
+	// **但传递边还在**：`go list -deps ./internal/tui` 仍然能看到三个
+	// 解析器，路径是 tui → discover → parser（discover.Fill 要读文件头）。
+	// 这条边没有切，也不该在这里切 —— discover 是界面消费的领域层，
+	// "它内部怎么读文件"是它自己的事。spec §4.0 那句"只依赖 model.Model"
+	// 按字面在 discover 这一层仍然不成立，这里如实记下，别把它读成
+	// "已经做到了"。
+	//
+	// 由 Library 在推入本视图时附上（见 Library.WithParse）。
+	parse func(path string) (*model.Model, error)
+
 	// scan 是单张量分析，注入是为了测试不碰真实文件
 	//（与 TensorView.scan 同一个理由）。真的那个要读几秒磁盘。
 	scan func(context.Context, *model.Model, *model.Tensor) error
@@ -154,8 +170,15 @@ func (v ModelView) Init() tea.Cmd {
 	}
 	path := v.pendingPath
 	name := v.name
+	parse := v.parse
 	return func() tea.Msg {
-		m, err := parser.Parse(path)
+		if parse == nil {
+			// **报错而不是崩**：nil 解引用会掀掉整个 TUI，而这只可能是
+			// 接线漏了（Library 没附上 parse）。做成一条能显示的
+			// 读取失败，用户至少看得到原因。
+			return modelLoadedMsg{err: errors.New("tui: 解析入口未注入（Library.WithParse）")}
+		}
+		m, err := parse(path)
 		if err == nil && m != nil {
 			// **名字写在模型上，下游视图才看得到**：张量列表与条目页
 			// 拿到的都是这个 *Model，各自再传一遍名字要改四个构造函数的

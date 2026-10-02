@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/sillydong/modelview/internal/parser"
 	"github.com/sillydong/modelview/internal/tui"
 )
 
@@ -23,7 +24,9 @@ func runTUI() error {
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		return fmt.Errorf("交互界面需要终端；非交互请用 modelview --json scan")
 	}
-	p := tea.NewProgram(tui.New(tui.NewLibrary()), tea.WithAltScreen())
+	// 解析入口在这里注入：tui 包不 import internal/parser（spec §4.0），
+	// 依赖从包级 import 变成运行时注入。
+	p := tea.NewProgram(tui.New(tui.NewLibrary().WithParse(parser.Parse)), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

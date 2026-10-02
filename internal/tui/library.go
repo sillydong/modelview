@@ -11,6 +11,7 @@ import (
 
 	"github.com/sillydong/modelview/internal/discover"
 	"github.com/sillydong/modelview/internal/humanize"
+	"github.com/sillydong/modelview/internal/model"
 )
 
 // libraryLoadedMsg 是扫描完成的消息。
@@ -38,6 +39,11 @@ type Library struct {
 	scan func(context.Context, discover.Options) discover.Result
 	fill func(*discover.Item) *discover.Item
 
+	// parse 是文件解析入口，由 cmd 注入（WithParse）并转交给推入的
+	// ModelView。**Library 自己不用它**，只是它知道"用户点开了哪个
+	// 文件"，而 ModelView 是那一刻造出来的。
+	parse func(path string) (*model.Model, error)
+
 	res    discover.Result
 	items  []discover.Item
 	cursor int
@@ -58,6 +64,21 @@ func NewLibrary() Library {
 		scan: discover.Scan,
 		fill: discover.Fill,
 	}
+}
+
+// WithParse 注入文件解析入口，返回新的 Library（值语义）。
+//
+// **由 cmd 在启动时调一次**。目的是去掉 tui 到 internal/parser 的
+// **直接** import（spec §4.0：tui 只依赖 model.Model）。改成注入之后
+// 这条直接边没了，但**传递边还在** —— tui → discover → parser，
+// 因为 discover.Fill 要读文件头。别把这条改动读成"依赖已经干净"，
+// 详见 ModelView.parse 的注释。
+//
+// 不注入的后果是明确的：点开模型时显示"解析入口未注入"，
+// 而不是 nil 解引用掀掉整个界面。
+func (l Library) WithParse(parse func(path string) (*model.Model, error)) Library {
+	l.parse = parse
+	return l
 }
 
 func (l Library) Title() string { return "modelview · 模型库" }
@@ -133,7 +154,9 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 		case "enter":
 			if l.canOpen() {
 				it := l.items[l.cursor]
-				return l, pushCmd(NewModelViewFromPath(it.Path, it.Name))
+				mv := NewModelViewFromPath(it.Path, it.Name)
+				mv.parse = l.parse
+				return l, pushCmd(mv)
 			}
 		}
 	}

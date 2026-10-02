@@ -1033,3 +1033,26 @@ func TestModelView_有权重绑定时要说明(t *testing.T) {
 		t.Errorf("差值是负的:\n%s", out)
 	}
 }
+
+// 没注入解析入口时要给一条可显示的错误，**不能 nil 解引用**。
+//
+// 那只可能是接线漏了（cmd 忘了 WithParse），而一次 nil 解引用 panic
+// 会掀掉整个 TUI、终端还留在 alt-screen 里。这条守卫没有测试的话
+// 就是一段没人看着的代码。
+func TestModelView_未注入解析入口不崩(t *testing.T) {
+	v := NewModelViewFromPath("/x/m.gguf", "m") // parse 为 nil
+	cmd := v.Init()
+	if cmd == nil {
+		t.Fatal("有待解析路径时 Init 必须返回命令")
+	}
+	msg, ok := cmd().(modelLoadedMsg)
+	if !ok {
+		t.Fatalf("Init 的命令没有产出 modelLoadedMsg")
+	}
+	if msg.err == nil {
+		t.Error("没有注入解析入口却没有报错 —— 会一直停在载入中")
+	}
+	if !strings.Contains(msg.err.Error(), "解析入口") {
+		t.Errorf("错误信息应说清是接线漏了，得到: %v", msg.err)
+	}
+}
