@@ -55,11 +55,16 @@ type QuantInfo struct {
 	ScaleMax    float64 `json:"scale_max"`
 	ScaleMean   float64 `json:"scale_mean"`
 	ScaleMedian float64 `json:"scale_median"`
-	// ScaleMedianSampled 表示中位数来自等距抽样而非全量。
+	// ScaleMedianSampled 表示中位数来自**抽样**而非全量。
 	//
 	// 中位数是唯一必须看到全部值才能精确算出的量（其余统计量都是流式精确的），
-	// 而子块数可以到千万级 —— 超预算后改为等距抽样并置这个标记。
+	// 而子块数可以到千万级 —— 超预算后改为**蓄水池抽样**并置这个标记。
 	// min/max/均值/零计数/最扁**任何时候都是全量精确的**。
+	//
+	// **不是等距抽样**（这两处注释原先都写错了）：步长会和数据的周期
+	// 混叠。实测构造 90% 小值 + 每 10 个一个大值的序列，步长 10 的等距
+	// 抽样正好只抽到大值，中位数从 1 变成 4 —— 见 analyze/quant.go 的
+	// quantSampleSeed。
 	ScaleMedianSampled bool `json:"scale_median_sampled,omitempty"`
 
 	// NonFiniteScales 是被排除在统计之外的子块数（|scale| 为 NaN 或 ±Inf）。
@@ -228,7 +233,15 @@ type QuantSim struct {
 // NaN 与 Inf 只计数，不参与 Min/Max/Mean/Std —— 让它们参与的话
 // 整条统计会变成 NaN，而界面上看起来只是"有点怪"。
 type Stats struct {
-	Count int64   `json:"count"` // 参与统计的元素个数（采样时小于参数总量）
+	// Count 是**样本元素总数** —— 注意它**含** NaN/Inf：实现在
+	// computeStats 里直接写 `Count: int64(len(vals))`，而 NaN/Inf 只是
+	// 不进 Min/Max/Mean/Std，仍然计进这个数。
+	//
+	// 想知道"有多少个有限值"要自己减：`Count - NaN - Inf`
+	//（analyze.NeedsWork 就是这么判"有没有可模拟的值"的）。
+	// 原先这里写的是"参与统计的元素个数"，字面读起来像已经排除过
+	// 非有限值 —— 全 NaN 的张量 Count 是 2048 而不是 0，会读错。
+	Count int64   `json:"count"`
 	Min   float64 `json:"min"`
 	Max   float64 `json:"max"`
 	Mean  float64 `json:"mean"`

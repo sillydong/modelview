@@ -150,7 +150,9 @@ func QuantExistingLines(q *model.QuantInfo) []string {
 		return nil
 	}
 	// 中位数是这里**唯一**可能来自抽样的量：其余统计量都是流式精确的，
-	// 只有中位数必须看到全部值，子块数上千万时超预算就改等距抽样
+	// 只有中位数必须看到全部值，子块数上千万时超预算就改**蓄水池抽样**
+	//（不是等距 —— 步长会与数据的周期混叠，见 model.QuantInfo 里
+	// ScaleMedianSampled 的实测记录）
 	//（见 model.QuantInfo 的说明）。
 	//
 	// 抽样时 ≈ 与"（抽样）"两个都要：只加 ≈ 会被读成排版装饰，
