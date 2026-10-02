@@ -985,3 +985,51 @@ func TestModelView_a失败的结果不清掉详情页的结果(t *testing.T) {
 		t.Errorf("失败计数 = %d, want 1", v.scanFailed)
 	}
 }
+
+// 存储判据必须用 TiedGroups，不能拿"两个数字不相等"当判据。
+//
+// safetensors 的 data_offsets 允许不从 0 开始，此时 StorageBytes
+// （数据区跨度）会**大于**张量字节和 —— 打出来就是"去重后仅占 32 B
+// （差值 -16 B 是共享的存储）"，自相矛盾。CLI 的 printSummary 早就
+// 改用 TiedGroups 并写明了理由，TUI 没跟上。
+func TestModelView_跨度为负差时不显示共享存储(t *testing.T) {
+	m := &model.Model{
+		Path: "x.safetensors", Format: model.FormatSafeTensors,
+		Tensors: []*model.Tensor{
+			{Name: "a", Dtype: model.DtypeF32, ByteSize: 16, ParamCount: 4},
+		},
+		StorageBytes: 32, // 跨度 32 > 字节和 16，且没有任何绑定
+	}
+	out := NewModelView(m).overview()
+	if strings.Contains(out, "共享") {
+		t.Errorf("没有绑定却说了共享存储:\n%s", out)
+	}
+	if strings.Contains(out, "-16 B") {
+		t.Errorf("打出了负数差值:\n%s", out)
+	}
+}
+
+// 反面：**真的**有权重绑定时必须说出来 —— 否则用户看到
+// "张量占用"与"去重后"两个不一样的数会以为哪边算错了。
+func TestModelView_有权重绑定时要说明(t *testing.T) {
+	m := &model.Model{
+		Path: "x.pt", Format: model.FormatPyTorch,
+		Tensors: []*model.Tensor{
+			{Name: "embed", Dtype: model.DtypeF32, ByteSize: 16, ParamCount: 4},
+			{Name: "head", Dtype: model.DtypeF32, ByteSize: 16, ParamCount: 4},
+		},
+		StorageBytes: 16,
+		TiedGroups:   [][]string{{"embed", "head"}},
+	}
+	out := NewModelView(m).overview()
+	if !strings.Contains(out, "共享") {
+		t.Errorf("有权重绑定却没说:\n%s", out)
+	}
+	// 差值必须是正的：32 - 16 = 16
+	if !strings.Contains(out, "16 B") {
+		t.Errorf("没打出正确的差值:\n%s", out)
+	}
+	if strings.Contains(out, "-") && strings.Contains(out, "差值 -") {
+		t.Errorf("差值是负的:\n%s", out)
+	}
+}

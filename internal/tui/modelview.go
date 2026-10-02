@@ -662,10 +662,17 @@ func (v ModelView) overview() string {
 		humanize.Count(m.TotalParams()), humanize.Comma(m.TotalParams()))
 	fmt.Fprintf(&sb, "张量占用 %s", humanize.Bytes(m.TensorBytes()))
 
-	// **存储字节与张量字节和是两回事**（权重绑定会让前者更小），
-	// 差值要说出来 —— 否则用户看到两个不一样的数会以为哪边算错了
-	if m.StorageBytes > 0 && m.StorageBytes != m.TensorBytes() {
-		fmt.Fprintf(&sb, "，去重后仅占 %s（差值 %s 是共享的存储）",
+	// **判据必须是 TiedGroups，不能是"两个数字不相等"**。
+	//
+	// StorageBytes 的语义随格式变：safetensors 下它是数据区跨度，而头部
+	// 允许 data_offsets 不从 0 开始 —— 此时它**大于**张量字节和，
+	// 打出来就是「去重后仅占 32 B（差值 -16 B 是共享的存储）」，
+	// 自相矛盾（"去重后"比"去重前"更大，差值还是负的）。
+	//
+	// CLI 的 printSummary 用的是同一个判据，两处不能分叉 ——
+	// 而 TUI 这一处原来就是没跟上 CLI 的那次修正。
+	if len(m.TiedGroups) > 0 {
+		fmt.Fprintf(&sb, "，去重后占 %s（差值 %s 是共享的存储）",
 			humanize.Bytes(m.StorageBytes),
 			humanize.Bytes(m.TensorBytes()-m.StorageBytes))
 	}
