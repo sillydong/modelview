@@ -66,18 +66,24 @@ jobs:
           else
             tar -czf "$name.tar.gz" "$name"
           fi
+      # 两种压缩包分开传，各自都带 if-no-files-found: error ——
+      # 混在一条 `path: dist/*` 里时，少传一个平台不会有任何提示。
+      #
+      # **`if` 不能少**：第一版给 tar.gz 那步漏了 `if: != windows`，
+      # 于是 Windows 的 job 在这一步报「找不到 dist/*.tar.gz」直接失败，
+      # 紧接着的 zip 那步被 skip —— zip 同样没传上去。
+      # 本来是想让"少了一个平台"出声，结果把它变成了必错。
       - uses: actions/upload-artifact@v4
+        if: matrix.goos != 'windows'
         with:
           name: ${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*.tar.gz
           if-no-files-found: error
 
-      # 单独一步：zip 的 glob 与 tar.gz 不同，混在一条 path 里时
-      # 少了一个平台不会有任何提示（if-no-files-found 只对整条 path 生效）
       - uses: actions/upload-artifact@v4
         if: matrix.goos == 'windows'
         with:
-          name: windows-zip
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*.zip
           if-no-files-found: error
 
