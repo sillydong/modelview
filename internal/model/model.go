@@ -61,6 +61,19 @@ type QuantInfo struct {
 	// min/max/均值/零计数/最扁**任何时候都是全量精确的**。
 	ScaleMedianSampled bool `json:"scale_median_sampled,omitempty"`
 
+	// NonFiniteScales 是被排除在统计之外的子块数（|scale| 为 NaN 或 ±Inf）。
+	//
+	// 与 Stats 对 NaN/Inf 的处理一致：**只计数、不参与**。
+	// 让它参与的话 math.Min/Max 会把 ScaleMin/ScaleMax 变成 NaN，
+	// 而 NaN 进不了 encoding/json —— 报错的是整个 --json，不是这一张张量。
+	//
+	// 注意它与 SubBlocks 的关系：SubBlocks 是**结构**计数
+	//（= 元素数 / 子块元素数，`sub_blocks × block_elems == param_count`
+	// 这条不变式靠它），所以非有限的子块**也**算进 SubBlocks，
+	// 只在上面这些统计量里被排除。NonFiniteScales == SubBlocks 表示
+	// 这个张量一个可用的 scale 都没有。
+	NonFiniteScales int64 `json:"non_finite_scales,omitempty"`
+
 	// ZeroScaleBlocks 是 scale 恒为 0 的子块数 —— 这些子块的权重
 	// 全落在一个量化级上，信息被压没了。是「压得最狠」的直接证据。
 	ZeroScaleBlocks int64 `json:"zero_scale_blocks"`
@@ -163,6 +176,25 @@ type QuantSim struct {
 
 	// Sampled 表示这些数字来自采样而非全量。
 	Sampled bool `json:"sampled"`
+
+	// NonFinite 是参与统计时**被排除**的 NaN/±Inf 个数。
+	//
+	// 必须有这个字段，理由不是完整而是**不这么写整个 --json 会失败**：
+	// encoding/json 拒绝序列化 NaN/Inf，而它们一旦进入 MaxAbsErr /
+	// MeanAbsErr / SNRDB，报错的是整个 `--json --stats` —— 不是这一张
+	// 张量。实测在真实 qwen2.5:3b（1.9 GB）上把一个张量的 3 个块的
+	// float16 scale 改成 NaN（6 个字节），434 个张量的输出全丢。
+	//
+	// 与 Stats 对 NaN/Inf 的处理保持一致：**只计数、不参与**。
+	// 消费者看到 NonFinite 等于样本数时，上面四个量没有意义。
+	//
+	// **它不总是等于"源里有多少个非有限值"**：一个 ±Inf 会毒掉它所在的
+	// 整个块（Q8_0 与 Q4_K 的块 scale 取自块内最大绝对值，Inf 让 scale
+	// 也变成 Inf），实测 64 个值的样本里放 1 个 +Inf，Q8_0 记 32、
+	// Q4_K 记 64。NaN 不毒块，三种格式都只记它自己那一个。
+	// 也就是说这个数同时包含两类：源值本身非有限的，以及**解码结果**
+	// 非有限的（被同块的 Inf 连坐）。两类都该排除，所以合成一个计数。
+	NonFinite int64 `json:"non_finite,omitempty"`
 }
 
 // Stats 是一个张量数值的统计结果。

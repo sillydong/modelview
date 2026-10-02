@@ -958,3 +958,39 @@ func TestAnalyze_缓存命中复用量化结果(t *testing.T) {
 			got[0].SNRDB, want[0].SNRDB)
 	}
 }
+
+// 没有可模拟的值（零元素 / 全非有限）时不算"还有活"——
+// 否则每次运行都重扫一遍，界面上永远转圈。
+func TestNeedsWork_无可模拟值不算欠账(t *testing.T) {
+	tests := []struct {
+		name string
+		tn   *model.Tensor
+		want bool
+	}{
+		{"还没算过", &model.Tensor{Dtype: model.DtypeF32, ParamCount: 100}, true},
+		{"算过且有 sims", &model.Tensor{
+			Dtype: model.DtypeF32, ParamCount: 100,
+			Stats:     &model.Stats{Count: 100},
+			QuantSims: []model.QuantSim{{Target: "Q8_0"}},
+		}, false},
+		{"零元素：没有可模拟的值", &model.Tensor{
+			Dtype: model.DtypeF32, ParamCount: 0, Stats: &model.Stats{Count: 0},
+		}, false},
+		// **注意 Count 是样本总数（含 NaN/Inf）**，所以这里写 2048 而不是 0 ——
+		// 判据必须减掉 NaN/Inf 两个计数才是"有没有有限值"
+		{"全非有限：Count 含 NaN", &model.Tensor{
+			Dtype: model.DtypeF32, ParamCount: 2048,
+			Stats: &model.Stats{Count: 2048, NaN: 2048},
+		}, false},
+		{"有 1 个 NaN 但其余有限", &model.Tensor{
+			Dtype: model.DtypeF32, ParamCount: 2048,
+			Stats: &model.Stats{Count: 2048, NaN: 1},
+			// 还没算 sims，所以仍有活
+		}, true},
+	}
+	for _, tt := range tests {
+		if got := NeedsWork(tt.tn); got != tt.want {
+			t.Errorf("%s: NeedsWork = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

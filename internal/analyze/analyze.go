@@ -97,6 +97,24 @@ func Analyze(ctx context.Context, m *model.Model, opts Options) (map[string]erro
 	return errs, nil
 }
 
+// finiteCount 返回参与统计的**有限值**个数。
+//
+// `Stats.Count` 是样本总数（**含** NaN/Inf，见 computeStats 里的
+// `Count: int64(len(vals))`），所以"有多少个能用的值"要减掉两个计数。
+//
+// **这个式子只留一份**：NeedsWork（还有没有活要干）与 analyzeOne
+// （要不要产出 sims）问的是同一个问题的两面。原先两处各写一遍，
+// 而测试只覆盖了 NeedsWork 那一半 —— 改一处漏一处不会有编译错误，
+// 只会让某张量的模拟静默漏算或多算。
+//
+// 参数是 nil 时返回 0：Stats 还没算出来的张量确实一个有限值都没有。
+func finiteCount(s *model.Stats) int64 {
+	if s == nil {
+		return 0
+	}
+	return s.Count - s.NaN - s.Inf
+}
+
 // NeedsWork 判断这个张量还有没有要算的。
 //
 // 导出是给界面用的：详情页要按同一个判据决定"要不要显示扫描中" ——
@@ -136,6 +154,16 @@ func NeedsWork(tn *model.Tensor) bool {
 		return decode.ScalesSupported(tn.Dtype) && tn.Quant == nil
 	}
 	if tn.Dtype.IsFloat() {
+		// **没有可模拟的值时不算欠账**：零元素张量、以及统计后全是
+		// NaN/Inf 的张量都产不出 sims，用 `len(QuantSims) == 0` 单独当判据
+		// 会让它们每次运行都重扫一遍，界面上则表现为每次打开详情页
+		// 都先转一轮 spinner。
+		//
+		// **判据不是 `Count == 0`**：`Count` 含 NaN/Inf，全 NaN 的张量
+		// Count 仍然是 2048。见 finiteCount —— 这个式子只在那里写一遍。
+		if finiteCount(tn.Stats) <= 0 {
+			return false
+		}
 		return len(tn.QuantSims) == 0
 	}
 	return false
@@ -168,7 +196,11 @@ func analyzeOne(src source, tn *model.Tensor, limit int) error {
 		if tn.Stats == nil {
 			tn.Stats = computeStats(vals, histogramBuckets, len(vals) < int(tn.ParamCount))
 		}
-		if tn.Dtype.IsFloat() && tn.Dtype.BitsPerWeight() > 0 && len(vals) > 0 {
+		// 判据不是 len(vals) > 0：全是 NaN 的 2048 个元素 len(vals) > 0，
+		// 但没有任何值可以模拟 —— 产出 sims 只会往 JSON 里塞 NaN
+		//（见 QuantSim.NonFinite 的说明）。用的是与 NeedsWork 同一个
+		// finiteCount，两处不会再漂移。
+		if tn.Dtype.IsFloat() && tn.Dtype.BitsPerWeight() > 0 && finiteCount(tn.Stats) > 0 {
 			sims := simulateAll(vals, tn.Dtype.BitsPerWeight())
 			sampled := len(vals) < int(tn.ParamCount)
 			for i := range sims {

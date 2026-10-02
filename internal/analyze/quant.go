@@ -84,9 +84,24 @@ func simulateTarget(vals []float32, d model.Dtype, srcBits float64) model.QuantS
 	}
 
 	var sumAbs, sumSq, sumErrSq float64
+	var finite int64
 	for i, v := range vals { // 只统计原值那部分，不含补的零
 		x := float64(v)
+		// **非有限值必须排除，不能只是"顺便处理"**：x 是 NaN 时下面
+		// 每一个量都会变成 NaN，而 NaN 进不了 encoding/json ——
+		// 报错的是整个 --json，不是这一张张量。口径与 Stats 一致：只计数、不参与。
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			s.NonFinite++
+			continue
+		}
 		e := math.Abs(x - float64(back[i]))
+		// 解码值本身也可能是非有限的：子块的 scale 是 NaN 时，
+		// 整个子块解码出来都是 NaN，误差跟着变成 NaN
+		if math.IsNaN(e) || math.IsInf(e, 0) {
+			s.NonFinite++
+			continue
+		}
+		finite++
 		sumAbs += e
 		sumSq += x * x
 		sumErrSq += e * e
@@ -97,11 +112,23 @@ func simulateTarget(vals []float32, d model.Dtype, srcBits float64) model.QuantS
 			s.MaxRelErr = math.Max(s.MaxRelErr, e/denom)
 		}
 	}
-	s.MeanAbsErr = sumAbs / float64(len(vals))
+	// 分母是**有限值个数**：用样本总数会把被排除的那些当成误差 0 摊进去
+	if finite > 0 {
+		s.MeanAbsErr = sumAbs / float64(finite)
+	}
 
-	// 信噪比：信号功率 / 噪声功率。全零输入时两者都是 0，
-	// 记 0 而不是 NaN 或 -Inf ——「没有信号也没有噪声」与「算不出来」是两回事。
-	if sumErrSq > 0 && sumSq > 0 {
+	// 信噪比：信号功率 / 噪声功率。**三种情况要分开**，
+	// 原判据只写了两种，NaN 输入掉进第三种里被当成第一种：
+	//
+	//   - 有信号有噪声（finite > 0 且两个和都为正）→ 10*log10
+	//   - 全零输入（sumSq == 0）→ 0：「没有信号也没有噪声」
+	//   - 没有任何有限值（finite == 0）→ 也留 0，但此时 NonFinite
+	//     等于样本数，界面与消费者据此区分"算不出来"
+	//
+	// 原判据 `if sumErrSq > 0 && sumSq > 0` 在 NaN 输入下两个比较都为假，
+	// 于是 SNRDB 停在零值 0.0 —— 界面上打出 "0.0dB"，读作"噪声与信号
+	// 等功率"，与真相（算不出来）正好相反。
+	if finite > 0 && sumErrSq > 0 && sumSq > 0 {
 		s.SNRDB = 10 * math.Log10(sumSq/sumErrSq)
 	}
 	return s
@@ -138,6 +165,7 @@ type quantAgg struct {
 	seen int64
 
 	nBlocks, subBlocks int64
+	nonFinite          int64 // |scale| 非有限的子块数（只计数，不进任何统计量）
 	minS, maxS, sum    float64
 	zeroCount          int64
 
@@ -188,13 +216,21 @@ func (a *quantAgg) add(subs []decode.SubScale) {
 	for _, s := range subs {
 		v := math.Abs(float64(s.Scale))
 		a.subBlocks++
-		a.sum += v
-		a.minS, a.maxS = math.Min(a.minS, v), math.Max(a.maxS, v)
-		if v == 0 {
-			a.zeroCount++
+		// **非有限的 |scale| 只计数**：math.Min/Max 会把 NaN 传播出去，
+		// 而 NaN 进不了 encoding/json（报错的是整个 --json）。
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			a.nonFinite++
+		} else {
+			a.sum += v
+			a.minS, a.maxS = math.Min(a.minS, v), math.Max(a.maxS, v)
+			if v == 0 {
+				a.zeroCount++
+			}
+			a.reservoir(float32(v))
 		}
-		a.reservoir(float32(v))
-
+		// curBlock **无论有限与否都要追加**：块的分组靠它，
+		// 少一个会让 FlattestIndex 与实际子块号错位；非有限的块
+		// 由 flushBlock 整体跳过（理由写在那里）
 		a.curBlock = append(a.curBlock, float32(v))
 		if len(a.curBlock) == int(a.perBlock) {
 			a.flushBlock()
@@ -224,20 +260,34 @@ func (a *quantAgg) flushBlock() {
 	a.nBlocks++
 	blkMax := 0.0
 	for _, v := range a.curBlock {
-		blkMax = math.Max(blkMax, float64(v))
+		f := float64(v)
+		// 非有限值不能进 math.Max：一个 NaN 会把 blkMax 变成 NaN，
+		// 于是 `blkMax > 0` 为假、整块的比例都被记成 0 ——
+		// 而 0 是"完全压平"最严重的合法取值，等于误报
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			continue
+		}
+		blkMax = math.Max(blkMax, f)
 	}
 	for i, v := range a.curBlock {
+		f := float64(v)
+		// **整块非有限时不需要单独判**：下面这一跳让整块都不产生候选，
+		// 等价于"跳过这一块"。曾经在这里加过一道 sawFinite 的早退，
+		// 它与这一跳重复 —— 变异验证时才发现它删掉没有任何测试变红。
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			continue
+		}
 		// 整块 scale 全 0 时比值记 0（完全压平），而不是 1 ——
 		// 记 1 的话最该被点名的块反而不会入选
 		ratio := 0.0
 		if blkMax > 0 {
-			ratio = float64(v) / blkMax
+			ratio = f / blkMax
 		}
 		// 严格小于：平局时保留先遇到的，结果稳定
 		if ratio < a.flatRatio {
 			a.flatRatio = ratio
 			a.flatIndex = a.subBlocks - int64(len(a.curBlock)) + int64(i)
-			a.flatScale = float64(v)
+			a.flatScale = f
 		}
 	}
 	a.curBlock = a.curBlock[:0]
@@ -255,6 +305,7 @@ func (a *quantAgg) finish() model.QuantInfo {
 		BitsPerWeight:   a.d.BitsPerWeight(),
 		Blocks:          a.nBlocks,
 		SubBlocks:       a.subBlocks,
+		NonFiniteScales: a.nonFinite,
 		ScaleMin:        a.minS,
 		ScaleMax:        a.maxS,
 		ZeroScaleBlocks: a.zeroCount,
@@ -262,14 +313,16 @@ func (a *quantAgg) finish() model.QuantInfo {
 		FlattestScale:   a.flatScale,
 		FlattestIndex:   a.flatIndex,
 	}
-	if a.subBlocks == 0 {
-		// 空输入：min/max 还是 ±Inf，中位数没有
+	if a.subBlocks == a.nonFinite {
+		// 一个**可用**的 scale 都没有（空输入，或全是 NaN/Inf）：
+		// min/max 还是 ±Inf、没有中位数、也没有"最扁"候选。
+		// 留零值，由 NonFiniteScales 说明原因
 		q.ScaleMin, q.ScaleMax = 0, 0
 		q.FlattestRatio = 0
 		return q
 	}
 	q.BlockElems = a.blockElems
-	q.ScaleMean = a.sum / float64(a.subBlocks)
+	q.ScaleMean = a.sum / float64(a.subBlocks-a.nonFinite)
 	q.ScaleMedian, q.ScaleMedianSampled = medianOf(a.medians), a.medianSampled
 	return q
 }
