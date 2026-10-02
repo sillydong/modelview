@@ -809,7 +809,7 @@ func TestAnalyze_缓存命中不丢量化分析(t *testing.T) {
 
 // 调用方只预填了 Stats 时，量化分析必须补上。
 //
-// 这是 needsWork 存在的另一半理由（不只是缓存）："已经算过"是针对
+// 这是 NeedsWork 存在的另一半理由（不只是缓存）："已经算过"是针对
 // **某一件具体的事**说的。把 Stats 当成整体已完成的信号，
 // 会让任何只有统计、没有量化分析的状态永远补不上 —— 缓存只是其中一种。
 func TestAnalyze_预填Stats后仍补上量化分析(t *testing.T) {
@@ -842,7 +842,7 @@ func TestAnalyze_预填Stats后仍补上量化分析(t *testing.T) {
 
 // 量化张量也一样：预填了 Stats 不等于块级诊断已经算过。
 //
-// 单独一条是因为 needsWork 对量化张量与浮点张量走的是**两个分支**，
+// 单独一条是因为 NeedsWork 对量化张量与浮点张量走的是**两个分支**，
 // 只测一条会让另一个分支的守卫无人看着（变异验证时确认过）。
 func TestAnalyze_预填Stats后仍补上块级诊断(t *testing.T) {
 	qblk := make([]byte, 34)

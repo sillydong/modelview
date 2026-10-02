@@ -6,13 +6,25 @@ import "strings"
 // 帮助栏写死字符串的话，改了键位就会显示错的提示，
 // 而用户照着按没反应。
 const (
-	keyUp     = "↑/k"
-	keyDown   = "↓/j"
-	keyEsc    = "Esc"
-	keyEnter  = "Enter"
-	keyRescan = "r"
-	keyQuit   = "q"
-	keyHelp   = "?"
+	keyUp        = "↑/k"
+	keyDown      = "↓/j"
+	keyEsc       = "Esc"
+	keyEnter     = "Enter"
+	keyFilter    = "/"
+	keyBackspace = "Backspace"
+	keyTab       = "Tab"
+	keyRescan    = "r"
+	keyQuit      = "q"
+	// `?` 现在有处理分支了：根视图在**模态判定之后**接它（app.go），
+	// 随处可开、带上下文模型。原先这段注释写的是反面 ——
+	// "在接上那条分支之前，任何 Help() 都不许列它，列了就是骗用户按"；
+	// 所以现在每个非模态的 Help() 都列上了它，**模态那一支不列**
+	//（输入态下 `?` 是用户要打的一个字符，不是快捷键）。
+	keyHelp = "?"
+
+	// keyScanAll 是"扫描全部张量"。**只有模型视图有那条分支**，
+	// 所以只有 ModelView 的 Help() 列它 —— 别的视图列了就是骗用户按。
+	keyScanAll = "a"
 )
 
 // helpLine 是底部的按键提示。

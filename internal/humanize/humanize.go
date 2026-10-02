@@ -3,11 +3,17 @@
 // 单独一个包而不是放在 cmd 里：**CLI 与 TUI 必须显示同样的数字**。
 // 各写一份的后果不是报错，是"命令行列出的模型是 1.80 GiB、
 // 界面里点进去是 1.8 GiB"—— 用户会以为是两个不同的数，
-// 而没有任何东西会红。计划 ④b 的 TUI 要用这同一份。
+// 而没有任何东西会红。界面与命令行用的是这同一份（已经接上了）。
+//
+// 判据是**这个量在别的语境里还有没有意义**，不是入参类型：
+// Bytes/Count/Percent/Float 在任何程序里都成立，所以在这里；
+// 位宽那种只在量化语境里才有意义的量留在 render（BitsPerWeight）——
+// 它收的也是裸 float64，按入参类型判会得出相反的结论。
 package humanize
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -121,4 +127,50 @@ func Truncate(s string, n int) string {
 		return s[:cut]
 	}
 	return s[:cut] + "..."
+}
+
+// Float 打印统计量：常用区间内 4 位小数，区间外退回 4 位有效数字。
+//
+// 权重的动态范围常常横跨好几个数量级（1e-5 到 1e-1），
+// 定点格式会让小值全变成 0.0000 —— 所以 [1e-3, 1e5) 之外要走 'g'。
+// 实测：`Float(6.5625)` = "6.5625"、`Float(123456.5)` = "1.235e+05"。
+//
+// **别拿它打位宽**，但理由不是"会打短" —— 实测它打得准。
+// 真正的理由有两条：
+//   - 它**不是为精确性设计的**：区间外会掉进科学计数法，
+//     而位宽是文件里的精确值，显示成 `1.235e+05` 毫无意义
+//   - 它会**补尾零**：`Float(4.5)` = "4.5000"，
+//     而位宽显示成 4.5000 是错的（那多出来的四位看着像精度）
+//
+// 位宽用 render.BitsPerWeight：按构造精确，且去尾零。
+func Float(v float64) string {
+	switch {
+	case v == 0:
+		return "0"
+	case math.IsNaN(v):
+		return "NaN"
+	case math.IsInf(v, 1):
+		return "+Inf"
+	case math.IsInf(v, -1):
+		return "-Inf"
+	}
+	if a := math.Abs(v); a >= 1e-3 && a < 1e5 {
+		return strconv.FormatFloat(v, 'f', 4, 64)
+	}
+	return strconv.FormatFloat(v, 'g', 4, 64)
+}
+
+// Percent 把 0..1 的比例打成百分数。
+//
+// 叫 Percent 而不是 Ratio：它**返回的就是百分数**（"50.00%"），
+// 与 Bytes/Count/Comma 一样"输出是什么就叫什么"—— 叫 Ratio 会让人
+// 以为打的是 0.5。
+func Percent(v float64) string {
+	if v == 0 {
+		return "0"
+	}
+	if v < 0.0001 {
+		return fmt.Sprintf("%.2g%%", v*100)
+	}
+	return fmt.Sprintf("%.2f%%", v*100)
 }

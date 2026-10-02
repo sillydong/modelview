@@ -102,6 +102,23 @@ class Test工具自身行为(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("没匹配到任何测试", r.stdout)
 
+    def test_超时的退出码与被抓住不同(self):
+        # 超时只说明"执行到了"，不说明断言能区分对错 —— 按退出码判读的
+        # 调用方必须能把它与"被抓住"分开（修复前两者都是 0）。
+        # `select {}` 是必然卡死且不需要任何 import 的变异。
+        r = self.run_tool("--file", "internal/model/blockbytes_test.go",
+                          "--old", "func TestBlockElems(t *testing.T) {",
+                          "--new", "func TestBlockElems(t *testing.T) {\n\tselect {}",
+                          "--test", "./internal/model/",
+                          "--run", "TestBlockElems", "--timeout", "5",
+                          "--label", "超时")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("超时", r.stdout)
+        # 卡死的那次也要还原（否则整个仓库留在变异后的状态里）
+        with open(os.path.join(self.ROOT, "internal/model/blockbytes_test.go"),
+                  encoding="utf-8") as f:
+            self.assertNotIn("select {}", f.read())
+
     def test_编译失败的变异被识别为无效(self):
         # 修复前这条会输出 "✓ 被抓住"
         r = self.run_tool("--file", "internal/analyze/stats.go",

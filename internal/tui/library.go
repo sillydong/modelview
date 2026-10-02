@@ -72,6 +72,9 @@ func (l Library) Init() tea.Cmd {
 	}
 }
 
+// Modal 恒为 false：模型库没有输入框，q 与 Esc 照旧归根视图。
+func (l Library) Modal() bool { return false }
+
 func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 	switch msg := msg.(type) {
 	case libraryLoadedMsg:
@@ -128,16 +131,27 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 			l.filled = 0
 			return l, l.Init()
 		case "enter":
-			if len(l.items) > 0 {
+			if l.canOpen() {
 				it := l.items[l.cursor]
-				return l, func() tea.Msg {
-					return pushMsg{v: NewModelViewFromPath(it.Path, it.Name)}
-				}
+				return l, pushCmd(NewModelViewFromPath(it.Path, it.Name))
 			}
 		}
 	}
 	return l, nil
 }
+
+// canOpen 表示 Enter 现在真的有得看 —— **帮助栏与 Update 读同一个判据**。
+//
+// 两个条件都要：
+//   - 列表为空（扫过的地方一个模型都没有）：没有可索引的条目，
+//     而 cursor 会一直压在 0 上；
+//   - `!loaded`：屏幕上是"正在扫描模型目录…"，列表**不在屏幕上** ——
+//     重扫那一下列表字段还是上一轮那份，Enter 那时打开的是一个
+//     用户看不见的条目（本仓为这条形状踩过好几次，见 View 里那段窗口说明）。
+//
+// 两处列/不列、开/不开都走这一个函数，所以不存在"帮助栏说能开、按下去没反应"
+// 或者反过来"没列却按得开"。
+func (l Library) canOpen() bool { return l.loaded && len(l.items) > 0 }
 
 // fillCmd 造一条"补这个条目的格式与参数量"的命令。
 //
@@ -155,20 +169,19 @@ func (l Library) fillCmd(i int) tea.Cmd {
 }
 
 func (l Library) Help() []string {
-	return []string{
-		keyUp + " " + keyDown + " 移动",
-		keyEnter + " 查看",
-		keyRescan + " 重扫",
-		keyQuit + " 退出",
+	bindings := []string{keyUp + " " + keyDown + " 移动"}
+	if l.canOpen() {
+		bindings = append(bindings, keyEnter+" 查看")
 	}
+	// `?` 在这里列得起来，是因为根视图真的接住了它（app.go）——
+	// 模型库这一屏没有上下文模型，速查表会以 nil 上下文打开：
+	// 条目页的"在本模型中"整节不显示。那时的事实是"不知道"。
+	return append(bindings, keyRescan+" 重扫", keyHelp+" 速查表", keyQuit+" 退出")
 }
 
 func (l Library) View(width, height int) string {
 	if !l.loaded {
 		return styleHint.Render("正在扫描模型目录…")
-	}
-	if len(l.items) == 0 {
-		return l.emptyView()
 	}
 
 	var sb strings.Builder
@@ -180,6 +193,12 @@ func (l Library) View(width, height int) string {
 	// 的提示（照着删会毁掉用户正在下的模型），它恰恰不能因为
 	// 模型多就消失。实测：30 个模型、80×24 的终端里，
 	// 原先把提示放在列表之后时它完全不可见。
+	//
+	// **空库也要走这一段**（所以这里不再有 `len(items)==0` 的早退）：
+	// 那是同一件事的**另一个方向** —— 提示不能因为模型**多**而消失，
+	// 同样不能因为模型**零**而消失。而且零这一头更隐蔽：空库看着像个
+	// 干净状态，用户不会怀疑自己漏看了什么（孤儿 blob 与未完成的下载
+	// 恰恰是"一个模型都没扫到、但磁盘上并不干净"时才会出现的组合）。
 	head := l.notices(width)
 	headLines := 0
 	if head != "" {
@@ -187,7 +206,20 @@ func (l Library) View(width, height int) string {
 		sb.WriteString(head)
 	}
 
-	// 给列表留的行数：总高 − 提示 − 进度行（如果有）
+	// 空库：没有列表可滚，只有一段说明 —— 它照样要接 height，
+	// 已用掉的提示行由 headLines 传进去扣（理由见 emptyView）
+	if len(l.items) == 0 {
+		sb.WriteString(l.emptyView(headLines, height))
+		return sb.String()
+	}
+
+	// 给列表留的行数：总高 − 提示 − **进度行（如果有）**。
+	//
+	// Library 是唯一有**两个**可选尾行的视图（范围提示 + 在途进度），
+	// 所以这一个 capacity 必须把进度行先让出来，范围提示那一行由
+	// listWindow 自己再扣 —— 原先只按一个扣减、判断里又少了
+	// "这一行放得下吗"那半句，矮终端下两行会一起被 padTo 顶掉，
+	// 屏幕上换成"…还有 2 行没显示"（实测 30 个模型、终端高 7）。
 	footerLines := 0
 	if l.filled < len(l.items) {
 		footerLines = 1
@@ -197,19 +229,29 @@ func (l Library) View(width, height int) string {
 		listCap = 1
 	}
 
-	start, end := window(len(l.items), l.cursor, listCap)
+	// 窗口与"要不要打范围提示"都交给 listWindow（先扣提示行、再算窗口，
+	// 且只有真放得下才打）—— 理由写在它那里，不在这里重抄。
+	start, end, showHint := listWindow(len(l.items), l.cursor, listCap)
+
+	// **自己拼行、最后 Join，末尾不留换行** —— 这是 joinHorizontal 里
+	// 记过的那条：留了的话 padTo 按 "\n" 切会多出一个空元素，
+	// 多出来的那一行会把视图自己算好的提示挤掉，换成措辞更差的
+	// "…还有 N 行没显示"（而且数字还大一）。Library 是**启动后的第一屏**，
+	// 模型一多就撞上（HF 缓存那种几百个文件的场景）。
+	lines := make([]string, 0, end-start+2)
 	for i := start; i < end; i++ {
-		sb.WriteString(l.row(i, l.items[i]) + "\n")
+		lines = append(lines, l.row(i, l.items[i]))
 	}
-	if start > 0 || end < len(l.items) {
-		sb.WriteString(styleDim.Render(fmt.Sprintf(
-			"  …共 %d 个，显示第 %d–%d 个", len(l.items), start+1, end)) + "\n")
+	if showHint {
+		lines = append(lines, styleDim.Render(fmt.Sprintf(
+			"  …共 %d 个，显示第 %d–%d 个", len(l.items), start+1, end)))
 	}
 
 	if l.filled < len(l.items) {
-		sb.WriteString(styleHint.Render(fmt.Sprintf(
+		lines = append(lines, styleHint.Render(fmt.Sprintf(
 			"正在读取格式与参数量… %d/%d", l.filled, len(l.items))))
 	}
+	sb.WriteString(strings.Join(lines, "\n"))
 	return sb.String()
 }
 
@@ -303,14 +345,61 @@ func (l Library) row(i int, it discover.Item) string {
 	return line
 }
 
-func (l Library) emptyView() string {
-	var sb strings.Builder
-	sb.WriteString("没有发现模型文件。\n\n")
-	sb.WriteString("扫过这些目录（不存在的会被跳过）：\n")
-	for _, p := range discover.Paths() {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  %-12s %s", p.Source, p.Dir)) + "\n")
+// emptyView 是空模型库那一屏的**说明部分**（安全提示由 View 先拼好，
+// 用的行数从 headLines 传进来 —— 它不能在这里自己再调一次 notices：
+// 两处各拼一次的话，"空库有没有提示"就又变成两个决定）。
+//
+// **它必须自己接住 height**：说明是定长的，但路径清单每条一行，
+// `discover.Paths()` 有几条就有几条 —— 目录多、终端矮时整屏放不下，
+// 超出的行会被根视图的 padTo 砍掉，砍掉的正是路径清单的尾部
+// （用户看这一屏就是为了知道去哪儿放模型）。所以按剩余行数裁剪，
+// 并留一行说"还有几行没列出来"。
+//
+// **末尾不留换行**（`joinHorizontal` 记过的那条）：留了的话 padTo 按 "\n"
+// 切会多算一行，内容放不下时"…还有 N 行没显示"里的 N 比实际丢掉的**多一**，
+// 内容恰好等于高度时还会白白砍掉一行。空库是**首次运行就会撞上的第一屏**
+// （本机没装模型时），而这一支此前没人看过：跨视图的守卫 `allViews()`
+// 用的是非空的假模型库。这里用 `strings.Join` 拼，所以末尾**构造上**
+// 不可能多出换行（原先逐行 append "\n" 再 TrimRight，靠的是裁，不是构造）。
+func (l Library) emptyView(headLines, height int) string {
+	// 这一屏自己能用的行数。**至少留 1 行**：提示本身就可能占满整个矮终端
+	//（那时 height-headLines ≤ 0），而这一屏不能什么都不说 ——
+	// 剩下的交给 padTo 兜底。它是唯一能砍到安全提示的东西，也正因如此
+	// notices 不在这里裁（"提示不能消失"是硬规矩，宁可让 padTo 留下记号）。
+	budget := height - headLines
+	if budget < 1 {
+		budget = 1
 	}
-	return sb.String()
+
+	head := []string{"没有发现模型文件。", "", "扫过这些目录（不存在的会被跳过）："}
+	paths := discover.Paths()
+	total := len(head) + len(paths)
+
+	lines := make([]string, 0, max(total, budget))
+	lines = append(lines, head...)
+	for _, p := range paths {
+		lines = append(lines, styleDim.Render(fmt.Sprintf("  %-12s %s", p.Source, p.Dir)))
+	}
+
+	// 放不下时**先砍路径清单、最后才砍说明**：说明是这一屏的结论
+	//（"没有发现模型文件"），路径只是"去哪儿放模型"的细节。反过来截的话，
+	// 矮终端上会剩一屏警告加一句"还有 N 行没显示"，用户不知道工具到底
+	// 扫到东西没有。提示行照例算进 budget（先留出提示行，否则被顶掉的
+	// 是真实内容）；budget 只剩 1 行时那一行给结论，隐藏的清单交给 padTo。
+	switch {
+	case total <= budget:
+		// 全放得下，什么都不用砍
+	case budget > len(head):
+		room := budget - len(head) - 1 // 给提示行让出一行
+		lines = append(lines[:len(head)+room], styleDim.Render(fmt.Sprintf(
+			"  …还有 %d 个扫描目录没列出来", len(paths)-room)))
+	case budget > 1:
+		lines = append(lines[:budget-1], styleDim.Render(fmt.Sprintf(
+			"  …还有 %d 行没显示（共 %d 个扫描目录）", total-budget+1, len(paths))))
+	default:
+		lines = lines[:budget]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func totalBytes(items []discover.Item) int64 {

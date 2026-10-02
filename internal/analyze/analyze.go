@@ -84,7 +84,7 @@ func Analyze(ctx context.Context, m *model.Model, opts Options) (map[string]erro
 			// 取消不是"某个张量失败"，要单独报出来让调用方知道是主动中断
 			return errs, err
 		}
-		if !needsWork(tn) {
+		if !NeedsWork(tn) {
 			continue // 本次输出需要的东西都在（来自缓存或调用方预填）
 		}
 		if err := analyzeOne(src, tn, limit); err != nil {
@@ -97,13 +97,35 @@ func Analyze(ctx context.Context, m *model.Model, opts Options) (map[string]erro
 	return errs, nil
 }
 
-// needsWork 判断这个张量还有没有要算的。
+// NeedsWork 判断这个张量还有没有要算的。
+//
+// 导出是给界面用的：详情页要按同一个判据决定"要不要显示扫描中" ——
+// 两边各写一份的话，对"什么时候该重扫"的理解迟早漂移。
 //
 // **不能只看 Stats != nil**：那会把「统计算过了」当成「分析做完了」。
 // 量化分析是后加的，旧缓存里没有 —— 用 Stats 当判据时同一个文件
 // 第二次跑会整块跳过量化分析，输出与第一次不同且不报错。
 // 实测：冷跑 181 个模拟 / 253 个诊断，热跑 0 / 0。
-func needsWork(tn *model.Tensor) bool {
+//
+// ## 与 analyzeOne 里的 needVals 不是同一个问题（本轮不合并）
+//
+// "什么时候该重扫"在本仓有三处表达：这里、analyzeOne 的 needVals、
+// 以及界面上那句"扫描中"（tui.TensorView 的 scanning，直接调本函数）。
+// brooks-review 把它报成知识重复，但**合并的前提是两个判据等价**，
+// 而它们不等价，硬塞进一个函数会同时答错两个问题：
+//
+//   - 本函数问「还有没有活要干」，是 analyzeOne 的入口闸门；
+//   - needVals 问「这份活里要不要逐值解码」，只是这活的一部分。
+//
+// 差在量化那一格：量化张量只要 Quant == nil 就还有活（块级诊断），
+// 而那活**不碰数据** —— 所以本函数为真时 needVals 可能是假。
+// 反过来 needVals 为真时本函数必为真（两种情形都落进这里的判据）。
+// 拿本函数顶替 needVals：只需读块头的张量会白白全量解码一遍；
+// 拿 needVals 顶替本函数：量化诊断永远补不上。
+//
+// 界面用的是这一个 —— 它要答的是"点开这个张量还要不要等"，
+// 与 Analyze 的闸门是同一个问题，不是第三种判据。
+func NeedsWork(tn *model.Tensor) bool {
 	if tn.Stats == nil {
 		return true
 	}
@@ -132,6 +154,11 @@ func analyzeOne(src source, tn *model.Tensor, limit int) error {
 
 	// 需要逐值解码的只有两件事：统计、以及浮点张量的量化模拟。
 	// 量化张量的块级诊断只读块头，不解码权重。
+	//
+	// **它是 NeedsWork 的严格子集，不是它的重复**：两者问的问题不同
+	//（"要不要碰数据" vs "还有没有活"），非等价的那一格是
+	// `Quant == nil` 的量化张量 —— 那里有活、但不用解码。
+	// 包含关系与"为什么本轮不合并"见 NeedsWork 的说明。
 	needVals := tn.Stats == nil || (tn.Dtype.IsFloat() && len(tn.QuantSims) == 0)
 	if needVals {
 		vals, err := decodeSampled(src, tn, limit)

@@ -235,16 +235,97 @@ func TestLibrary_空结果有提示(t *testing.T) {
 // 帮助栏只列**这一层真的支持**的键。
 func TestLibrary_帮助栏只列支持的键(t *testing.T) {
 	lib, _ := fakeLibrary()
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
 	help := strings.Join(lib.Help(), " ")
 	for _, want := range []string{keyUp, keyDown, keyEnter, keyRescan, keyQuit} {
 		if !strings.Contains(help, want) {
 			t.Errorf("帮助栏少了 %s: %q", want, help)
 		}
 	}
-	// **还没做的键不许列**：列了等于骗用户按。
-	// Enter（进单模型）已经接上了；?（速查表）在 ④b-2
-	if strings.Contains(help, "?") {
-		t.Errorf("速查表还没做，帮助栏不该列 ?: %q", help)
+	// **没有处理分支的键不许列**：列了等于骗用户按。
+	// `?` 原先就是这个反例（根视图里没有那条全局分支）；现在它接上了，
+	// 于是反过来 —— 这一屏按 `?` 真的开得出速查表，帮助栏就得列。
+	if !strings.Contains(help, keyHelp+" 速查表") {
+		t.Errorf("按 ? 能开速查表，帮助栏却没列 %s: %q", keyHelp, help)
+	}
+}
+
+// **空库时帮助栏不能说"Enter 查看"** —— 一条模型都没有，按下去什么也不做。
+//
+// 空库是真会出现的（扫过的地方一个模型都没有），不是错误状态；
+// 还没扫完时列表也是空的，同一个判据一起挡住。
+func TestLibrary_空库帮助栏不列Enter(t *testing.T) {
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{}
+	}
+	// 还没扫完：界面显示的是"正在扫描…"，此时列 Enter 同样是骗用户按
+	if help := strings.Join(lib.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("还没扫完就列了 %s: %q", keyEnter, help)
+	}
+
+	lib2, _ := lib.Update(lib.Init()())
+	empty := lib2.(Library)
+	if len(empty.items) != 0 {
+		t.Fatalf("前提不成立：这个库有 %d 个模型", len(empty.items))
+	}
+	if help := strings.Join(empty.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("空库的帮助栏列了 %s —— 按下去没反应: %q", keyEnter, help)
+	}
+	if _, cmd := empty.Update(key("enter")); cmd != nil {
+		t.Error("空库按 Enter 居然有动作 —— 帮助栏与 Update 读的不是同一个判据")
+	}
+
+	// 正对照：有模型时两个方向都要成立（列了、而且真的能开）
+	full, _ := fakeLibrary()
+	full2, _ := full.Update(full.Init()())
+	full = full2.(Library)
+	if help := strings.Join(full.Help(), " "); !strings.Contains(help, keyEnter) {
+		t.Errorf("有模型时帮助栏少了 %s: %q", keyEnter, help)
+	}
+	if _, cmd := full.Update(key("enter")); cmd == nil {
+		t.Error("有模型时按 Enter 没动作")
+	}
+}
+
+// **重扫期间按 Enter 不该打开一个看不见的条目。**
+//
+// 屏幕上是"正在扫描模型目录…"，而 items 还是上一轮那份 ——
+// 判据只写 `len(items) > 0` 的话，用户这一下会进到一个自己没看见的模型里
+// （本仓为"打开看不见的那一条"踩过好几次，见 View 里那段窗口说明）。
+func TestLibrary_重扫期间不列Enter也不打开(t *testing.T) {
+	lib, _ := fakeLibrary()
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+	if !lib.canOpen() {
+		t.Fatal("前提不成立：扫完之后应当能开")
+	}
+
+	// 按 r 发起重扫：只把 loaded 打回假，列表字段还留着
+	lib3, cmd := lib.Update(key("r"))
+	lib = lib3.(Library)
+	if cmd == nil {
+		t.Fatal("按 r 没返回重扫命令")
+	}
+	if lib.loaded || len(lib.items) == 0 {
+		t.Fatalf("前提不成立：loaded=%v, items=%d", lib.loaded, len(lib.items))
+	}
+	if help := strings.Join(lib.Help(), " "); strings.Contains(help, keyEnter) {
+		t.Errorf("重扫期间帮助栏列了 %s，而屏幕上是「正在扫描」: %q", keyEnter, help)
+	}
+	if _, c := lib.Update(key("enter")); c != nil {
+		t.Error("重扫期间按 Enter 打开了看不见的条目")
+	}
+
+	// 扫完之后同一个判据要放行
+	lib4, _ := lib.Update(cmd())
+	lib = lib4.(Library)
+	if help := strings.Join(lib.Help(), " "); !strings.Contains(help, keyEnter) {
+		t.Errorf("扫完之后帮助栏少了 %s: %q", keyEnter, help)
+	}
+	if _, c := lib.Update(key("enter")); c == nil {
+		t.Error("扫完之后按 Enter 没动作")
 	}
 }
 
@@ -455,6 +536,66 @@ func TestLibrary_目录警告要显示关键半句(t *testing.T) {
 	}
 }
 
+// emptyLibraryWithWarnings 造一个"空库 + 有孤儿 + 有未完成下载 + 有目录警告"的视图。
+//
+// 这不是硬凑的边角场景：**一个模型都没扫到、但磁盘上并不干净**恰恰是
+// 孤儿 blob 与未完成下载最容易出现的组合（模型目录配错、权限不对时，
+// items 扫不到而 blobs 照样列得出来），而这两条提示是全工具仅有的
+// 会引导破坏性操作的话。
+func emptyLibraryWithWarnings() Library {
+	lib := NewLibrary()
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{
+			InProgress: []discover.Item{{Name: "sha256-x-partial", Path: "/blobs/sha256-x-partial", Size: 1 << 30}},
+			Orphans:    []discover.Item{{Name: "sha256-orphan", Path: "/blobs/sha256-orphan", Size: 4096}},
+			Errs: []string{"/blobs 下有 1 个 manifest 读不了，孤儿 blob 检测已跳过：" +
+				"报成「可回收」可能让你删掉真实模型"},
+		}
+	}
+	lib2, _ := lib.Update(lib.Init()())
+	return lib2.(Library)
+}
+
+// **空库时安全提示同样不能消失** —— "空"是另一个方向的同一个问题。
+//
+// `notices` 的注释讲的是"提示不能因为模型**多**而消失"，
+// 而这里是"因为模型**零**而消失"：更隐蔽，因为空库看着像个干净状态，
+// 用户不会怀疑自己漏看了什么。原来的 `View` 在 `len(items)==0` 时
+// 直接 `return l.emptyView()`，把那三条提示整个跳过了。
+//
+// 断言的是**原始输出**（不经根视图，与既有的 TestLibrary_* 一致）：
+// 三条提示都在屏幕上、空库说明也在，且行数 ≤ height ——
+// 拼起来之后超出的行会被 padTo 砍掉，砍掉的正是路径清单（用户看这一屏
+// 就是为了知道去哪儿放模型）。
+func TestLibrary_空库时安全提示仍在(t *testing.T) {
+	lib := emptyLibraryWithWarnings()
+	if len(lib.items) != 0 {
+		t.Fatalf("前提不成立：这个库有 %d 个模型", len(lib.items))
+	}
+
+	for _, h := range []int{6, 8, 10, 20, 40} {
+		out := lib.View(80, h)
+		if strings.HasSuffix(out, "\n") {
+			t.Errorf("高度 %d：原始输出以换行结尾（padTo 会多算一行）:\n%q", h, out)
+		}
+		if n := len(strings.Split(out, "\n")); n > h {
+			t.Errorf("高度 %d：原始输出 %d 行 —— 超出的会被 padTo 砍掉:\n%s", h, n, out)
+		}
+		// 两条破坏性提示 + 孤儿那一行的名字（提示里列的是清单，每个孤儿一行）
+		for _, want := range []string{"未完成的下载", "孤儿 blob", "sha256-orphan",
+			"没有发现模型文件。"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("高度 %d：%q 不在屏上 —— 提示因为模型**零**而消失了:\n%s",
+					h, want, out)
+			}
+		}
+		// 目录警告会按宽度折行，按词匹配会跨行漏掉 —— 先拼回一行再找
+		if flat := strings.Join(strings.Fields(out), ""); !strings.Contains(flat, "可能让你删掉真实模型") {
+			t.Errorf("高度 %d：目录警告的关键半句不见了:\n%s", h, out)
+		}
+	}
+}
+
 func itemNames(items []discover.Item) []string {
 	out := make([]string, len(items))
 	for i, it := range items {
@@ -529,6 +670,138 @@ func TestLibrary_模型多时安全提示仍可见(t *testing.T) {
 	flat := strings.Join(strings.Fields(out), "")
 	if !strings.Contains(flat, "可能让你删掉真实模型") {
 		t.Errorf("破坏性警告的关键半句被截掉了:\n%s", out)
+	}
+}
+
+// **列表满时最后一行不能被 padTo 挤掉 —— 这条必须经过根视图。**
+//
+// 直接调 lib.View() 看不出问题（实测：那样调用一切正常，选中项可见、
+// 提示的数字也自洽）；症状由两处**独立的**成因叠加产生：
+//   - 范围提示追加在 listCap 之外 —— 原始输出比高度多一行
+//   - 列表末尾的 "\n" —— strings.Split 多算一个空元素
+//
+// 两者都只在根视图的 padTo 那一层才显形：它砍掉最后两行，
+// 而光标停在末尾时，被砍掉的正是用户选着的那一条
+// （实测 30 个模型、120×10/20/30 三档：屏幕上最后一个名字一直是倒数第二个）。
+//
+// 既有的 TestLibrary_* 全部直接调 lib.View —— 这个结构缺口与 Task 2 修的
+// "单测绿而真终端坏"同一类：**验证路径绕过了出事的那一层**。
+func TestLibrary_经根视图不丢最后一行(t *testing.T) {
+	lib := NewLibrary()
+	items := make([]discover.Item, 30)
+	for i := range items {
+		items[i] = discover.Item{
+			Source: discover.SourceGeneric,
+			Name:   fmt.Sprintf("model-%02d.gguf", i),
+			Path:   fmt.Sprintf("/x/%02d", i), Size: int64(i),
+		}
+	}
+	lib.scan = func(context.Context, discover.Options) discover.Result {
+		return discover.Result{Items: items}
+	}
+	lib.fill = func(it *discover.Item) *discover.Item { return it }
+	lib2, _ := lib.Update(lib.Init()())
+	lib = lib2.(Library)
+	// 走真实的 Fill 消息把"正在读取…"那一行消掉：留着它，
+	// 列表高度又少一行，测的就不是"列表满"这一条了
+	for i := range items {
+		lib2, _ = lib.Update(itemFilledMsg{index: i, item: items[i], gen: lib.gen})
+		lib = lib2.(Library)
+	}
+	// 光标走到最后一项 —— 被 padTo 砍掉的那一行正是它
+	for range len(items) - 1 {
+		lib2, _ = lib.Update(key("down"))
+		lib = lib2.(Library)
+	}
+	if lib.cursor != len(items)-1 {
+		t.Fatalf("光标在第 %d 项，没走到最后一项", lib.cursor)
+	}
+
+	// 高度至少覆盖三档：这条与高度无关（列表满就丢）
+	for _, h := range []int{10, 20, 30} {
+		m, _ := New(lib).Update(tea.WindowSizeMsg{Width: 120, Height: h})
+		out := m.(Model).View()
+
+		want := "▸ " + lib.items[lib.cursor].Name
+		if !strings.Contains(out, want) {
+			t.Errorf("高度 %d：光标在最后一项，屏幕上却没有 %q —— 被 padTo 砍掉了:\n%s",
+				h, want, out)
+		}
+		// 范围提示那一行也要活下来（它是第二个被砍的候选）
+		if len(lib.items) > h-2 && !strings.Contains(out, "显示第") {
+			t.Errorf("高度 %d：列表放不下，范围提示却被 padTo 砍掉了:\n%s", h, out)
+		}
+	}
+}
+
+// **矮终端下范围提示与进度行都要活下来 —— 容量只够一行时不能硬塞。**
+//
+// Library 是唯一有**两个**可选尾行的视图（范围提示 + 在途进度），
+// 而原先只按一个扣减、判断里又少了"这一行放得下吗"那半句：
+// 终端高 7、30 个模型、孤儿提示 + 在途进度下，范围提示与进度行会一起
+// 被 padTo 顶掉，屏幕上换成"…还有 2 行没显示" —— 用户既不知道
+// 自己看到的是第几个，也不知道后面还有没有（实测）。
+//
+// 两档分别守两件事：①够放时提示必须在（去掉 listWindow 里的 `rows--`
+// 就没有提示了）；②不够放时不许硬塞（少了 `end-start < capacity`
+// 那半句，padTo 会把提示与进度一起顶掉）。
+func TestLibrary_矮终端范围提示与进度行都在(t *testing.T) {
+	items := make([]discover.Item, 30)
+	for i := range items {
+		items[i] = discover.Item{Source: discover.SourceGeneric,
+			Name: fmt.Sprintf("model-%02d.gguf", i),
+			Path: fmt.Sprintf("/x/%02d", i), Size: int64(i)}
+	}
+	orphan := discover.Item{Name: "sha256-orphan", Path: "/blobs/sha256-orphan", Size: 4096}
+	newLib := func(res discover.Result) Library {
+		lib := NewLibrary()
+		lib.scan = func(context.Context, discover.Options) discover.Result { return res }
+		// 不投递任何 Fill 结果 —— 这样"正在读取…"那一行是在途的
+		lib.fill = func(it *discover.Item) *discover.Item { return it }
+		lib2, _ := lib.Update(lib.Init()())
+		lib = lib2.(Library)
+		// 光标走到中间：范围提示才一定有东西可说（start > 0）
+		for range 10 {
+			lib2, _ = lib.Update(key("down"))
+			lib = lib2.(Library)
+		}
+		return lib
+	}
+	view := func(lib Library) string {
+		m, _ := New(lib).Update(tea.WindowSizeMsg{Width: 120, Height: 7})
+		return m.(Model).View()
+	}
+	selected := func(lib Library) string { return "▸ " + lib.items[lib.cursor].Name }
+
+	// ① 孤儿提示 2 行 + 进度行：容量 2 → 一个模型 + 范围提示 + 进度行，正好塞满
+	lib := newLib(discover.Result{Items: items, Orphans: []discover.Item{orphan}})
+	out := view(lib)
+	if strings.Contains(out, "没显示") {
+		t.Errorf("屏幕上出现了 padTo 的「还有 N 行没显示」—— 视图没算准高度:\n%s", out)
+	}
+	if !strings.Contains(out, "显示第") {
+		t.Errorf("列表没显示完，范围提示那一行不在屏上:\n%s", out)
+	}
+	if !strings.Contains(out, "正在读取格式与参数量") {
+		t.Errorf("在途的进度行被顶掉了:\n%s", out)
+	}
+	if !strings.Contains(out, selected(lib)) {
+		t.Errorf("光标选中的那一行不在屏上:\n%s", out)
+	}
+
+	// ② 再加一条"未完成的下载"（提示 3 行）：容量只剩 1 行，装不下范围提示 ——
+	//    这时**只能**保住进度行；硬塞的话两行都会换成 padTo 那句更差的话
+	lib = newLib(discover.Result{Items: items, Orphans: []discover.Item{orphan},
+		InProgress: []discover.Item{{Name: "sha256-x-partial", Path: "/p", Size: 1 << 30}}})
+	out = view(lib)
+	if strings.Contains(out, "没显示") {
+		t.Errorf("容量只剩 1 行时硬塞提示行，padTo 把提示与进度一起顶掉了:\n%s", out)
+	}
+	if strings.Contains(out, "显示第") {
+		t.Errorf("容量只剩 1 行，范围提示放不下却还是塞进去了:\n%s", out)
+	}
+	if !strings.Contains(out, "正在读取格式与参数量") {
+		t.Errorf("在途的进度行被顶掉了:\n%s", out)
 	}
 }
 
