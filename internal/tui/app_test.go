@@ -555,6 +555,31 @@ func allViews() []namedView {
 	// fixture 里带了 Errs，顺带把 wrapText 那条折行路径也纳进跨视图守卫。
 	warnLib := emptyLibraryWithWarnings()
 
+	// **下面几档是为"帮助栏的分支"补的**（都走真实的按键路径）：
+	// 每类视图原先只有一个 fixture，于是另一些 Help 分支上的键掉了
+	// 没有任何测试会红（实测：把下面三支里的 `?` 删掉，全绿）。
+	metaFocus := gotoSection(mv, sectionMetadata)
+	mf, _ := metaFocus.Update(key("tab"))
+	metaFocus = mf.(ModelView)
+
+	searched := NewRefView(m)
+	sv, _ := searched.Update(key("/"))
+	searched = sv.(RefView)
+	sv, _ = searched.Update(key("Q4"))
+	searched = sv.(RefView)
+	sv, _ = searched.Update(key("enter")) // 确认搜索：非模态、Help 是"改搜索词"那一支
+	searched = sv.(RefView)
+
+	// 模态两档：`?` 在输入态**不许列**（那是用户要打的字符），而"跳过模态"
+	// 那一支此前没有任何 fixture 走到过 —— 给搜索态加上 `?` 也没人红。
+	searchingRef := NewRefView(m)
+	sr, _ := searchingRef.Update(key("/"))
+	searchingRef = sr.(RefView)
+
+	filtering := NewTensorsView(m)
+	fv, _ := filtering.Update(key("/"))
+	filtering = fv.(TensorsView)
+
 	return []namedView{
 		{"Library", lib},
 		{"Library/空库", emptyLib},
@@ -571,8 +596,20 @@ func allViews() []namedView {
 		{"TensorsView", NewTensorsView(m)},
 		{"TensorView/扫描中", NewTensorView(m, m.Tensors[0])},
 		{"TensorView/已出结果", NewTensorView(m2, done)},
+		// 名字里一个可解释的段都没有时的分支（Help 与 View 各少一段）。
+		// 上面两个 fixture 的名字都含 `weight`，**碰不到这一支** ——
+		// 少了它，"两个分支都要列 `?`"这条约定有一半没人看。
+		{"TensorView/名字无段", NewTensorView(m, &model.Tensor{
+			Name: "xyzzy", Dtype: model.DtypeF32, ByteSize: 4, ParamCount: 1})},
+		{"ModelView/元数据焦点在右栏", metaFocus},
 		{"RefView", NewRefView(nil)},
+		{"RefView/已确认搜索", searched},
+		{"RefView/搜索输入中", searchingRef},
+		{"TensorsView/过滤输入中", filtering},
 		{"EntryView", NewEntryView(nil, ref.Entry{ID: "quant:Q4_K", Title: "Q4_K"})},
+		// 有跳得动的 SeeAlso 那一支（Help 里多一个"Enter 跳转"）
+		{"EntryView/有跳转目标", NewEntryView(nil, ref.Entry{
+			ID: "quant:Q4_K", Title: "Q4_K", SeeAlso: []string{"float:F16"}})},
 	}
 }
 
@@ -595,6 +632,182 @@ func TestViews_原始输出不留末尾换行(t *testing.T) {
 					"padTo 会因此多算一行、多砍一行，并把「还有 N 行」说大一",
 					nv.name, h)
 			}
+		}
+	}
+}
+
+// ===== `?` 全局速查表（spec §8.1"随时可开"）=====
+
+// **任何非模态的地方按 `?` 都能开速查表**，Esc 逐层退回。
+func TestApp_问号随处可开(t *testing.T) {
+	root := New(fakeView{title: "根"})
+	next, cmd := root.Update(key(keyHelp))
+	if cmd == nil {
+		t.Fatal("按 `?` 没有返回命令 —— 速查表打不开")
+	}
+	m := runCmd(t, next.(Model), cmd)
+	if n := len(m.stack); n != 2 {
+		t.Fatalf("栈深 = %d, want 2", n)
+	}
+	if _, ok := m.stack[1].(RefView); !ok {
+		t.Fatalf("栈顶是 %T, want RefView —— `?` 没推入速查表", m.stack[1])
+	}
+
+	// Esc 逐层退回（速查表 → 原来那一屏）
+	back, _ := m.Update(key("esc"))
+	if n := len(back.(Model).stack); n != 1 {
+		t.Errorf("Esc 之后栈深 = %d, want 1", n)
+	}
+}
+
+// openEntryByTitle 在速查表里搜一个标题、打开那条条目，返回新的根 Model。
+//
+// 走的是真实路径（`/` 进输入态 → 整段词一次进 → Enter 确认 → Enter 打开），
+// 不直接构造 EntryView —— 直接构造的话，"上下文模型有没有从根视图
+// 经 RefView 传到条目页"这件事根本不在被测范围里。
+func openEntryByTitle(t *testing.T, m Model, title string) Model {
+	t.Helper()
+	for _, k := range []string{"/", title, "enter"} {
+		next, _ := m.Update(key(k))
+		m = next.(Model)
+	}
+	next, cmd := m.Update(key("enter"))
+	if cmd == nil {
+		t.Fatalf("速查表里搜 %q 之后按 Enter 打不开条目", title)
+	}
+	return runCmd(t, next.(Model), cmd)
+}
+
+// **上下文关联**：栈里有模型时按 `?`，速查表要带上它 ——
+// 条目页的"在本模型中"那一节靠它算出来。
+func TestApp_问号带上上下文模型(t *testing.T) {
+	m := fakeModel()
+	root := New(fakeView{title: "根"})
+	pushed, _ := root.Update(pushMsg{v: loadModelView(m)})
+	board := pushed.(Model)
+
+	next, cmd := board.Update(key(keyHelp))
+	board = runCmd(t, next.(Model), cmd)
+
+	rv, ok := board.stack[len(board.stack)-1].(RefView)
+	if !ok {
+		t.Fatalf("栈顶是 %T, want RefView", board.stack[len(board.stack)-1])
+	}
+	if rv.m != m {
+		t.Fatalf("速查表拿到的模型 = %v, want 模型视图里那一个", rv.m)
+	}
+
+	// 一路开到条目页：有了上下文，"在本模型中"那一段要算得出来
+	board = openEntryByTitle(t, board, "MOSTLY_Q4_K_M")
+	ev, ok := board.stack[len(board.stack)-1].(EntryView)
+	if !ok {
+		t.Fatalf("栈顶是 %T, want EntryView", board.stack[len(board.stack)-1])
+	}
+	if out := ev.View(120, 40); !strings.Contains(out, "在本模型中") {
+		t.Errorf("条目页没显示「在本模型中」—— 上下文模型没传下去:\n%s", out)
+	}
+}
+
+// **模型库那一屏没有上下文模型**：速查表拿到 nil，条目页不显示
+// "在本模型中" —— 没有上下文时的事实是"不知道"，不是"没有"。
+//
+// 与上一条**用同一个条目**：两条路径的差别只有上下文，所以
+// "条目页显示不显示"这件事只可能是上下文带来的。
+func TestApp_模型库按问号没有上下文(t *testing.T) {
+	lib, _ := fakeLibrary()
+	lib2, _ := lib.Update(lib.Init()())
+	board := New(lib2.(Library))
+
+	next, cmd := board.Update(key(keyHelp))
+	board = runCmd(t, next.(Model), cmd)
+
+	rv, ok := board.stack[len(board.stack)-1].(RefView)
+	if !ok {
+		t.Fatalf("栈顶是 %T, want RefView", board.stack[len(board.stack)-1])
+	}
+	if rv.m != nil {
+		t.Fatalf("模型库那一屏带上了模型 %v —— 那一屏没有上下文", rv.m)
+	}
+
+	board = openEntryByTitle(t, board, "MOSTLY_Q4_K_M")
+	ev, ok := board.stack[len(board.stack)-1].(EntryView)
+	if !ok {
+		t.Fatalf("栈顶是 %T, want EntryView", board.stack[len(board.stack)-1])
+	}
+	out := ev.View(120, 40)
+	// **先确认这一页真的渲染出来了**：否则"没有在本模型中"可能只是
+	// 因为整页是空的（空页也满足 Contains == false）
+	if !strings.Contains(out, "MOSTLY_Q4_K_M") || !strings.Contains(out, "相关条目") {
+		t.Fatalf("条目页没渲染出内容，下面的否定断言会变成空转:\n%s", out)
+	}
+	if strings.Contains(out, "在本模型中") {
+		t.Errorf("没有上下文模型却显示了「在本模型中」—— "+
+			"用户会读成「这个模型里没有」:\n%s", out)
+	}
+}
+
+// **模态视图必须优先拿到 `?` 与 `a`**：用户正在过滤框里想输入一个问号
+// （或者想筛名字里带 a 的张量），不能因为根视图抢走它们而弹出速查表、
+// 或者开始扫描。
+//
+// 这条**必须经过根视图**：直接调 view.Update 绕过了全局按键那一层，
+// 而"根视图把按键吞了"正是那一层的事（app.go 开头那段注释讲的漏法）。
+//
+// **`a` 今天不在这一格**：根视图里没有全局 `a`（它只归 ModelView），
+// 所以它走的是兜底转发那条路 —— 等它将来变成全局键时再加进来。
+func TestApp_输入态下的问号进的是过滤词(t *testing.T) {
+	for _, k := range []string{keyHelp} {
+		t.Run(k, func(t *testing.T) {
+			root := New(fakeView{title: "根"})
+			pushed, _ := root.Update(pushMsg{v: newTensors(fakeModelWithTensors(3))})
+			m := pushed.(Model)
+
+			// 先进过滤态（`/` 这时还不是模态的，走根视图末尾的兜底转发）
+			opened, _ := m.Update(key("/"))
+			m = opened.(Model)
+
+			next, cmd := m.Update(key(k))
+			m = next.(Model)
+			if cmd != nil {
+				t.Errorf("模态下按 %q 返回了命令 —— 根视图把它当全局键处理了", k)
+			}
+			if n := len(m.stack); n != 2 {
+				t.Fatalf("栈深 = %d, want 2 —— 按 %q 推入了新视图", n, k)
+			}
+			tv, ok := m.stack[1].(TensorsView)
+			if !ok {
+				t.Fatalf("栈顶是 %T, want TensorsView", m.stack[1])
+			}
+			if tv.filter != k {
+				t.Errorf("过滤词 = %q, want %q —— 这个字符没进输入框", tv.filter, k)
+			}
+		})
+	}
+}
+
+// 帮助栏里 `?` 这一格的**两个方向**都要守住：
+//   - 非模态的每一屏按 `?` 都真的能开速查表 → 必须列（漏了用户不知道
+//     有这条路，而它是新加的全局键）；
+//   - 输入态（模态）里 `?` 是用户要打的一个字符 → **不许列**（列了就是
+//     骗用户按，按下去只会往输入框里多一个问号）。
+//
+// 两个方向都走 allViews()，所以每类视图的每个 Help 分支都要在这里有
+// 一个 fixture —— 这一版之前每类视图只有一个 fixture，实测把三处
+// 分支上的 `?` 删掉、把输入态的 `?` 加上，全都没有测试红。
+func TestViews_帮助栏问号的两个方向(t *testing.T) {
+	for _, nv := range allViews() {
+		help := strings.Join(nv.v.Help(), " ")
+		has := strings.Contains(help, keyHelp+" 速查表")
+		if nv.v.Modal() {
+			if has {
+				t.Errorf("%s（输入态）的帮助栏列了 %q —— 那一态下它是用户要打的字符: %q",
+					nv.name, keyHelp, help)
+			}
+			continue
+		}
+		if !has {
+			t.Errorf("%s（非模态）的帮助栏没列 %q —— 按 `?` 真的能开速查表: %q",
+				nv.name, keyHelp+" 速查表", help)
 		}
 	}
 }

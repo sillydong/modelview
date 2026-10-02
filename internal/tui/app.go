@@ -16,6 +16,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/sillydong/modelview/internal/model"
 )
 
 // View 是一层界面。**每一层自己处理按键与渲染**，
@@ -104,6 +106,36 @@ func (m Model) top() View {
 // 从类型断言改成直接调（Modal 已经是 View 的一部分）之后，这里不再有
 // "断言失败就当非模态"的静默分支；栈空的前提与兜底理由见 top()。
 func (m Model) topModal() bool { return m.top().Modal() }
+
+// modelProvider 让根视图沿栈找到"当前上下文里的模型"。
+//
+// 用可选接口而不是让根 Model 存一个"最近看过的模型"字段：
+// 存字段就有"什么时候该清"的问题（用户退回模型库之后那个字段还活着吗），
+// 而沿栈找是**派生**的 —— 栈里没有 ModelView 时它自然是 nil，
+// 不可能变陈旧。这与 topModal() 用"看栈顶"而不是存标志位是同一个理由。
+//
+// 返回值允许是 nil：ModelView 还在异步解析时 m 就是 nil，
+// 而"还没解析出来"与"没有上下文"对速查表是同一种事实 —— 不知道。
+type modelProvider interface{ ContextModel() *model.Model }
+
+// contextModel 沿栈自上而下找第一个提供上下文的视图，都没有就返回 nil。
+//
+// **找到第一个就停**：那一个是这一屏的答案，它说 nil 就是"不知道"。
+//
+// 这条规则今天与"跳过返回 nil 的那层、继续往下找"**不可区分**（栈里
+// 最多只有一个 ModelView），也就是说后者是一个等价变异、任何测试都
+// 打不死。写成"找到就停"是因为它在**任何**栈形下都答得对：将来多一个
+// provider 时，"还没解析出来"不会被下层某个模型的上下文顶替掉 ——
+// 那时屏幕上显示的是"正在解析…"，而条目页却会显示另一个模型的
+// "在本模型中"。
+func (m Model) contextModel() *model.Model {
+	for i := len(m.stack) - 1; i >= 0; i-- {
+		if p, ok := m.stack[i].(modelProvider); ok {
+			return p.ContextModel()
+		}
+	}
+	return nil
+}
 
 // pushCmd 造一条"进入下一层"的命令，省得每个视图都写一遍闭包。
 //
@@ -202,6 +234,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// 根视图的 Esc 不退出程序（用户想的是"取消"，不是"关掉"）
 			return m, nil
+		case keyHelp:
+			// **这条分支必须在上面那个模态判定之后**（它就在这个 switch 里）：
+			// 过滤框里的 `?` 是用户要输入的一个字符，不是快捷键 ——
+			// 判据挪到模态判定之前的话，在过滤框里永远打不出问号。
+			// 这个顺序**只有经根视图才测得到**：直接调 view.Update 的测试
+			// 绕过了全局按键，那正是本文件开头那段注释讲的漏法。
+			//
+			// 不带上下文的模型时（模型库那一屏）传 nil 是对的：
+			// 条目页的"在本模型中"那时整节不显示 —— 事实是"不知道"。
+			return m, pushCmd(NewRefView(m.contextModel()))
 		}
 
 	case pushMsg:

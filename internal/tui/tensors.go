@@ -254,7 +254,7 @@ func (v TensorsView) Help() []string {
 		//（用户不知道有这条路）。详情页在这里接的线。
 		bindings = append(bindings, keyEnter+" 详情")
 	}
-	return append(bindings, keyFilter+" 过滤", keyEsc+" 返回", keyQuit+" 退出")
+	return append(bindings, keyFilter+" 过滤", keyHelp+" 速查表", keyEsc+" 返回", keyQuit+" 退出")
 }
 
 func (v TensorsView) View(width, height int) string {

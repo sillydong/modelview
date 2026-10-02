@@ -244,10 +244,10 @@ func TestLibrary_帮助栏只列支持的键(t *testing.T) {
 		}
 	}
 	// **没有处理分支的键不许列**：列了等于骗用户按。
-	// `?` 就是这样 —— 速查表是从"速查表"栏目按 Enter 进的，
-	// 根视图里没有 `?` 那条全局分支。
-	if strings.Contains(help, "?") {
-		t.Errorf("帮助栏列了没有处理分支的 ?: %q", help)
+	// `?` 原先就是这个反例（根视图里没有那条全局分支）；现在它接上了，
+	// 于是反过来 —— 这一屏按 `?` 真的开得出速查表，帮助栏就得列。
+	if !strings.Contains(help, keyHelp+" 速查表") {
+		t.Errorf("按 ? 能开速查表，帮助栏却没列 %s: %q", keyHelp, help)
 	}
 }
 

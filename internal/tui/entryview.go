@@ -110,13 +110,13 @@ func (v EntryView) canJump() bool {
 
 func (v EntryView) Help() []string {
 	if len(v.targets) == 0 {
-		return []string{keyEsc + " 返回", keyQuit + " 退出"}
+		return []string{keyHelp + " 速查表", keyEsc + " 返回", keyQuit + " 退出"}
 	}
 	bindings := []string{keyUp + " " + keyDown + " 选择"}
 	if v.canJump() {
 		bindings = append(bindings, keyEnter+" 跳转")
 	}
-	return append(bindings, keyEsc+" 返回", keyQuit+" 退出")
+	return append(bindings, keyHelp+" 速查表", keyEsc+" 返回", keyQuit+" 退出")
 }
 
 func (v EntryView) View(width, _ int) string {

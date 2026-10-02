@@ -76,6 +76,14 @@ func NewModelViewFromPath(path, name string) ModelView {
 	return ModelView{pendingPath: path, name: name}
 }
 
+// ContextModel 实现 modelProvider：根视图按 `?` 时靠它把"当前模型"
+// 带进速查表。
+//
+// **解析还没回来时返回 nil 是对的**：RefView 对 nil 的契约是
+// "不显示"在本模型中"那一节"，而那一刻的事实是"还不知道"，
+// 不是"这个模型里没有"。
+func (v ModelView) ContextModel() *model.Model { return v.m }
+
 func (v ModelView) Title() string {
 	if v.err != nil {
 		return "modelview · 读取失败"
@@ -310,7 +318,8 @@ func (v ModelView) Help() []string {
 		if v.opensOnEnter() {
 			bindings = append(bindings, keyEnter+" 查速查表")
 		}
-		return append(bindings, keyTab+" 回到栏目", keyEsc+" 返回", keyQuit+" 退出")
+		bindings = append(bindings, keyTab+" 回到栏目", keyHelp+" 速查表")
+		return append(bindings, keyEsc+" 返回", keyQuit+" 退出")
 	}
 	bindings := []string{keyUp + " " + keyDown + " 切换栏目"}
 	if v.hasBodyCursor() {
@@ -319,6 +328,7 @@ func (v ModelView) Help() []string {
 	if v.opensOnEnter() {
 		bindings = append(bindings, keyEnter+" 打开")
 	}
+	bindings = append(bindings, keyHelp+" 速查表")
 	return append(bindings, keyEsc+" 返回", keyQuit+" 退出")
 }
 

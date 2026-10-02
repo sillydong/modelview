@@ -173,7 +173,10 @@ func (l Library) Help() []string {
 	if l.canOpen() {
 		bindings = append(bindings, keyEnter+" 查看")
 	}
-	return append(bindings, keyRescan+" 重扫", keyQuit+" 退出")
+	// `?` 在这里列得起来，是因为根视图真的接住了它（app.go）——
+	// 模型库这一屏没有上下文模型，速查表会以 nil 上下文打开：
+	// 条目页的"在本模型中"整节不显示。那时的事实是"不知道"。
+	return append(bindings, keyRescan+" 重扫", keyHelp+" 速查表", keyQuit+" 退出")
 }
 
 func (l Library) View(width, height int) string {

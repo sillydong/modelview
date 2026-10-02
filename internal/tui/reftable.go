@@ -233,10 +233,15 @@ func (v RefView) Help() []string {
 	if v.canOpen() {
 		bindings = append(bindings, keyEnter+" 详情")
 	}
+	// `?` 在这里也列：按下去会再压一层速查表（根视图的全局分支），
+	// 而当前这一层的上下文模型会跟着传下去 —— 那一层照样算得出
+	// "在本模型中"。
 	if v.search != "" {
-		return append(bindings, keyFilter+" 改搜索词", keyEsc+" 返回", keyQuit+" 退出")
+		return append(bindings, keyFilter+" 改搜索词", keyHelp+" 速查表",
+			keyEsc+" 返回", keyQuit+" 退出")
 	}
-	return append(bindings, keyFilter+" 搜索", keyEsc+" 返回", keyQuit+" 退出")
+	return append(bindings, keyFilter+" 搜索", keyHelp+" 速查表",
+		keyEsc+" 返回", keyQuit+" 退出")
 }
 
 func (v RefView) View(width, height int) string {

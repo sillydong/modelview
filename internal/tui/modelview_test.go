@@ -159,21 +159,21 @@ func TestModelView_标题(t *testing.T) {
 	}
 }
 
-// 帮助栏不能列**没有处理分支**的键。
+// 帮助栏只列**真的支持**的键 —— 这条规矩是两个方向。
 //
-// 张量详情与速查表都已经接上了（各自有子视图，见 TensorsView / RefView），
-// 剩下的反例是 `?`：根视图里没有那条全局分支，
-// 速查表是从"速查表"栏目按 Enter 进的。
+// 反例原先写的是 `?`（那时根视图里没有那条全局分支，速查表只能从
+// "速查表"栏目按 Enter 进）。`?` 接上之后它从"不许列"变成"必须列"——
+// 漏了就是用户不知道有这条路。
+//
+// 反方向（列了按不动）由 `TestModelView_元数据帮助栏与实际一致` 守着
+// （概览栏不许列 Enter / Tab）。
 func TestModelView_帮助栏只列支持的键(t *testing.T) {
 	v := loadModelView(fakeModel())
 	help := strings.Join(v.Help(), " ")
-	for _, want := range []string{keyUp, keyDown, keyEsc, keyQuit} {
+	for _, want := range []string{keyUp, keyDown, keyEsc, keyQuit, keyHelp + " 速查表"} {
 		if !strings.Contains(help, want) {
-			t.Errorf("帮助栏少了 %s: %q", want, help)
+			t.Errorf("帮助栏少了 %q: %q", want, help)
 		}
-	}
-	if strings.Contains(help, keyHelp) {
-		t.Errorf("`?` 没有处理分支，帮助栏不该列 %s: %q", keyHelp, help)
 	}
 }
 

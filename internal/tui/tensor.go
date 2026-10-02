@@ -196,11 +196,12 @@ func (v TensorView) Help() []string {
 		return []string{
 			keyUp + " " + keyDown + " 选择名字里的段",
 			keyEnter + " 查速查表",
+			keyHelp + " 速查表",
 			keyEsc + " 返回",
 			keyQuit + " 退出",
 		}
 	}
-	return []string{keyEsc + " 返回", keyQuit + " 退出"}
+	return []string{keyHelp + " 速查表", keyEsc + " 返回", keyQuit + " 退出"}
 }
 
 func (v TensorView) View(width, height int) string {
