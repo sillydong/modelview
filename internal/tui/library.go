@@ -14,6 +14,17 @@ import (
 	"github.com/sillydong/modelview/internal/model"
 )
 
+// maxFillConcurrency 是模型库首屏"逐个读头部"的最大并发数。
+//
+// 原来是**无上限扇出**：N 个模型一次 tea.Batch 出 N 条命令，每条都要
+// 读文件头。HF 缓存那种几百个文件的场景会同时打开几百个文件，
+// 而 macOS 的 fd 软上限是 256；内存上实测单个 8.95 GB 模型的解析峰值
+// 137 MiB，5 个同时在场就是几百 MiB 的基线。
+//
+// 取 8：够让"先出来的先显示"这个体验保住（**不是分批** —— 分批会让它
+// 退化成"一批一批地显示"），同时把并发的解析内存压到 8 × 单模型峰值。
+const maxFillConcurrency = 8
+
 // libraryLoadedMsg 是扫描完成的消息。
 type libraryLoadedMsg struct{ res discover.Result }
 
@@ -49,6 +60,19 @@ type Library struct {
 	cursor int
 	loaded bool
 	filled int
+
+	// next 是下一条要派的 Fill 的下标，inflight 是在途条数。
+	// fillBatch 按**空闲槽位**派（maxFillConcurrency - inflight），
+	// 收到 itemFilledMsg 后先减在途再补 —— 自续链，不是一次性发完。
+	//
+	// **两个都必须是字段而不是局部变量**：Update 是值接收者，链要跨
+	// 多次 Update 保持进度。
+	//
+	// inflight 是必需的，不能只看 next：第一版按"一次派满 8 条"写，
+	// 于是每完成一条就再派 8 条 —— 在途数从 7 涨到 15，越滚越多，
+	// 信号量根本没限住（测试实测报"补派了 8 条，want 1"）。
+	next     int
+	inflight int
 
 	// gen 是扫描世代号：每次 Scan 完成就自增。
 	//
@@ -110,20 +134,9 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 		l.cursor = 0
 		l.filled = 0
 		l.gen++
-		// 每个条目一条独立命令：先出来的先显示，
-		// 一条大模型的 Fill 卡住不会拖住其它条目。
-		//
-		// **已知边界（没实测，属于推断）**：这里是无上限扇出 ——
-		// HF 缓存那种几百个文件的场景下，会同时打开几百个文件
-		// （每条 Fill 都要 parser.Parse 读头部），而 macOS 的 fd 软上限
-		// 是 256。本机只有 5 个模型，碰不到。
-		// 真要改的话是加一个容量固定的信号量（8–16），不是分批 ——
-		// 分批会让"先出来的先显示"退化成"一批一批地显示"。
-		cmds := make([]tea.Cmd, 0, len(l.items))
-		for i := range l.items {
-			cmds = append(cmds, l.fillCmd(i))
-		}
-		return l, tea.Batch(cmds...)
+		l.next, l.inflight = 0, 0
+		next, cmd := l.fillBatch()
+		return next, cmd
 
 	case itemFilledMsg:
 		// **先看世代**：过期的结果直接丢，不要碰 items 与 filled。
@@ -135,7 +148,13 @@ func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 			l.items[msg.index] = msg.item
 		}
 		l.filled++
-		return l, nil
+		// 腾出一个槽位再补派，把在途数维持在 maxFillConcurrency ——
+		// 这就是"先出来的先显示"（不是等一批全回来）。
+		if l.inflight > 0 {
+			l.inflight--
+		}
+		next, cmd := l.fillBatch()
+		return next, cmd
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -181,6 +200,33 @@ func (l Library) canOpen() bool { return l.loaded && len(l.items) > 0 }
 // **复制一份再传进去**：Fill 是就地修改的，
 // 直接把切片元素的地址交给另一个 goroutine，
 // 而主线程同时在读它 —— 那是数据竞争。
+// fillBatch 派发下一批 Fill（最多 maxFillConcurrency 条）。
+//
+// **返回更新后的 Library**：Update 是值接收者，next 的推进必须
+// 跟着返回值走 —— 只在方法里改 l.next 是改一个马上被丢掉的副本。
+//
+// 自续链而不是 worker 池：每收到一条 itemFilledMsg 就补派一条，
+// 与 ModelView 的扫描链同一个形状 —— 没有长期存活的 goroutine、
+// 没有 channel，共享可写状态只在 Update（主线程）里动。
+func (l Library) fillBatch() (Library, tea.Cmd) {
+	// **按空闲槽位派，不是每次都派满**：完成一条只腾出一个槽位，
+	// 派满的话在途数会越滚越多（见 inflight 字段的说明）。
+	free := maxFillConcurrency - l.inflight
+	cmds := make([]tea.Cmd, 0, max(free, 0))
+	for range free {
+		if l.next >= len(l.items) {
+			break
+		}
+		cmds = append(cmds, l.fillCmd(l.next))
+		l.next++
+		l.inflight++
+	}
+	if len(cmds) == 0 {
+		return l, nil
+	}
+	return l, tea.Batch(cmds...)
+}
+
 func (l Library) fillCmd(i int) tea.Cmd {
 	it := l.items[i]
 	fill := l.fill

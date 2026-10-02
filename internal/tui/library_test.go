@@ -843,3 +843,107 @@ func TestLibrary_目录警告经根视图不被截断(t *testing.T) {
 		t.Errorf("破坏性警告的关键半句被终端宽度截掉了:\n%s", out)
 	}
 }
+
+// Fill 的扇出必须有上限。
+//
+// 原来是无上限 tea.Batch：几百个模型的场景会同时打开几百个文件
+// （macOS 的 fd 软上限是 256），内存上每个解析峰值 137 MiB（实测
+// 8.95 GB 的模型），5 个同时在场就是几百 MiB 的基线。
+//
+// **测的是"首批派了几条"，不是真并发**：那正是信号量控制的东西，
+// 而且是确定性的 —— 真去数并发峰值要起 goroutine，测出来还不稳定。
+func TestLibrary_Fill扇出有上限(t *testing.T) {
+	const n = 100
+	items := make([]discover.Item, n)
+	for i := range items {
+		items[i] = discover.Item{Name: fmt.Sprintf("m%d", i), Path: fmt.Sprintf("/x/%d", i)}
+	}
+	lib := NewLibrary()
+	lib.fill = func(it *discover.Item) *discover.Item { return it }
+
+	var v View = lib
+	var cmd tea.Cmd
+	v, cmd = v.Update(libraryLoadedMsg{res: discover.Result{Items: items}})
+	if cmd == nil {
+		t.Fatal("扫描完成必须发起 Fill")
+	}
+	if n := cmdCount(cmd()); n != maxFillConcurrency {
+		t.Errorf("首批派了 %d 条，want %d", n, maxFillConcurrency)
+	}
+	// 在途数就是限制并发的那个量，直接钉住它
+	if got := v.(Library).inflight; got != maxFillConcurrency {
+		t.Errorf("首批之后在途 = %d, want %d", got, maxFillConcurrency)
+	}
+
+	// 回来一条就补一条，不是一次全发。
+	// **gen 必须取更新后的那个**：libraryLoadedMsg 把它自增过了，
+	// 用旧值的话消息会被静默丢弃（判据是 msg.gen != l.gen），
+	// 而那种丢弃看起来就像"没有补派"。
+	updated := v.(Library)
+	var next tea.Cmd
+	v, next = v.Update(itemFilledMsg{index: 0, item: items[0], gen: updated.gen})
+	if next == nil {
+		t.Fatal("收到一条 Fill 结果后应当补派下一条")
+	}
+	if n := cmdCount(next()); n != 1 {
+		t.Errorf("补派了 %d 条，want 1 —— 一次派满的话在途数会越滚越多", n)
+	}
+	// 减一再加一，在途数应当**回到**上限而不是超过它
+	if got := v.(Library).inflight; got != maxFillConcurrency {
+		t.Errorf("补派之后在途 = %d, want %d —— 信号量没兜住", got, maxFillConcurrency)
+	}
+}
+
+// cmdCount 数一条命令里含多少个实际任务。
+//
+// **两种形状都要收**：tea.Batch 对单条命令直接返回它本身，多于一条
+// 才包成 BatchMsg。只认 BatchMsg 的话，"补派 1 条"会被判成失败
+// （实测：得到 tui.itemFilledMsg）。
+func cmdCount(msg tea.Msg) int {
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		return len(batch)
+	}
+	if msg == nil {
+		return 0
+	}
+	return 1
+}
+
+// 全部派完之后不再补派 —— 链必须自己停。
+func TestLibrary_Fill派完即止(t *testing.T) {
+	const n = 3 // 少于上限，一批就派完
+	items := make([]discover.Item, n)
+	for i := range items {
+		items[i] = discover.Item{Name: fmt.Sprintf("m%d", i), Path: fmt.Sprintf("/x/%d", i)}
+	}
+	lib := NewLibrary()
+	lib.fill = func(it *discover.Item) *discover.Item { return it }
+
+	var v View = lib
+	var cmd tea.Cmd
+	v, cmd = v.Update(libraryLoadedMsg{res: discover.Result{Items: items}})
+	if got := cmdCount(cmd()); got != n {
+		t.Fatalf("派了 %d 条，want %d（少于上限时应当全派）", got, n)
+	}
+
+	// 把三条结果都回灌，最后一个不该再补派。
+	//
+	// **gen 要取每次更新后的值**（同上）；而且必须断言 filled 真的涨到了 n ——
+	// 第一版用旧 gen，消息全被丢弃，`next` 恒为 nil，那条"不再补派"的
+	// 断言根本没执行过（空转）。
+	for i := range items {
+		cur := v.(Library)
+		var next tea.Cmd
+		v, next = v.Update(itemFilledMsg{index: i, item: items[i], gen: cur.gen})
+		if i == n-1 {
+			if got := v.(Library).filled; got != n {
+				t.Fatalf("filled = %d, want %d —— 消息被世代判据丢掉了", got, n)
+			}
+			if next != nil {
+				if got := cmdCount(next()); got != 0 {
+					t.Errorf("派完之后又补派了 %d 条 —— 链没有停", got)
+				}
+			}
+		}
+	}
+}
