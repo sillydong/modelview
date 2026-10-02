@@ -258,6 +258,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 时的取舍写在 routeToModelView 上。
 		return m.routeToModelView(msg)
 
+	case tensorScannedMsg, tickMsg:
+		// 与 batchScannedMsg 同一个理由。`?` 就列在详情页的帮助栏里，
+		// 任何时刻都能按 —— 交给栈顶的话扫描结果被咽掉，回来时
+		// scanning 还是 true、tn.Stats 还是 nil，spinner 永远转下去。
+		// tickMsg 是它有节奏的心跳，断了的话动画也会停住。
+		return m.routeToTensorView(msg)
+
+	case itemFilledMsg:
+		// 模型库首屏「先列文件、再逐个读头部」那条链的结果。
+		// 被栈顶吃掉的话，回来时进度行永远停在 0/N，
+		// 那些行的格式与参数量永远是空的。
+		return m.routeToLibrary(msg)
+
 	case popToMsg:
 		for len(m.stack) > 1 {
 			if _, ok := m.stack[len(m.stack)-1].(ModelView); ok {
@@ -432,4 +445,44 @@ func truncateLines(s string, width int) string {
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// routeToTensorView 把只属于 TensorView 的消息送给栈里那个 TensorView。
+//
+// 与 routeToModelView 是同一个理由（见那里的说明）：栈顶可能是用户
+// 中途推上来的速查表或条目页。交给栈顶的话扫描结果被咽掉，
+// 回来时 scanning 还是 true、tn.Stats 还是 nil，spinner 永远转下去。
+//
+// 归**栈里最靠上的**那个：同一时刻只有一个详情页在扫。
+// 栈里没有时丢弃 —— 与 routeToModelView 同一个取舍，那条链的宿主
+// 已经不在栈上了，它的状态随视图一起没了。
+func (m Model) routeToTensorView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	for i := len(m.stack) - 1; i >= 0; i-- {
+		tv, ok := m.stack[i].(TensorView)
+		if !ok {
+			continue
+		}
+		next, cmd := tv.Update(msg)
+		m.stack[i] = next
+		return m, cmd
+	}
+	return m, nil
+}
+
+// routeToLibrary 把只属于 Library 的消息送给栈里那个 Library。
+//
+// itemFilledMsg 是模型库首屏「先列文件、再逐个读头部」那条链的结果。
+// 用户在这期间按 `?`，顶层是速查表 —— 被咽掉的话回来时进度行
+// 永远停在 0/N，那些行的格式与参数量永远是空的。
+func (m Model) routeToLibrary(msg tea.Msg) (tea.Model, tea.Cmd) {
+	for i := len(m.stack) - 1; i >= 0; i-- {
+		lib, ok := m.stack[i].(Library)
+		if !ok {
+			continue
+		}
+		next, cmd := lib.Update(msg)
+		m.stack[i] = next
+		return m, cmd
+	}
+	return m, nil
 }

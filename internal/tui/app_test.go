@@ -976,3 +976,106 @@ func TestApp_路由不放松模型认领(t *testing.T) {
 		t.Error("别的模型的结果合并进了这个模型的张量")
 	}
 }
+
+// topOf 返回栈顶视图（测试用）。
+func topOf(m tea.Model) View { return m.(Model).top() }
+
+// findTensorView 返回栈里最靠上的 TensorView。
+//
+// 返回的是**值拷贝**：这些测试只读字段，不写回栈里。
+func findTensorView(m tea.Model) *TensorView {
+	mm := m.(Model)
+	for i := len(mm.stack) - 1; i >= 0; i-- {
+		if tv, ok := mm.stack[i].(TensorView); ok {
+			return &tv
+		}
+	}
+	return nil
+}
+
+// findLibrary 返回栈里最靠上的 Library（同样是值拷贝）。
+func findLibrary(m tea.Model) *Library {
+	mm := m.(Model)
+	for i := len(mm.stack) - 1; i >= 0; i-- {
+		if lib, ok := mm.stack[i].(Library); ok {
+			return &lib
+		}
+	}
+	return nil
+}
+
+// 结果消息必须送到**发起它**的那个视图，而不是恰好压在栈顶的那个。
+//
+// 与 routeToModelView 是同一个理由：消息该归谁由"谁是那个视图"决定，
+// 不是由"谁恰好在栈顶"决定。此处是同一个 bug 的另外两个实例 ——
+// 帮助栏里就列着 `?`，用户在任何时刻都能按。
+func TestApp_张量扫描结果不被栈顶吃掉(t *testing.T) {
+	tn := &model.Tensor{Name: "t", Dtype: model.DtypeF32, ParamCount: 8, ByteSize: 32}
+	mdl := &model.Model{Path: "x.gguf", Tensors: []*model.Tensor{tn}}
+	tv := NewTensorView(mdl, tn)
+	if !tv.scanning {
+		t.Fatal("Stats 为 nil 时 NewTensorView 应当进入扫描中")
+	}
+
+	var m tea.Model = New(tv)
+
+	// 用户按 ? 把速查表压上来（此时扫描结果还没回来）。
+	// **? 返回的是一个 Cmd，要执行它才会产生 pushMsg** —— 丢掉的话
+	// 速查表根本没压上来，测试会在一个假的场景里通过。
+	m, cmd := m.Update(key("?"))
+	if cmd == nil {
+		t.Fatal("按 ? 应当返回一个压栈命令")
+	}
+	m, _ = m.Update(cmd())
+	if _, ok := topOf(m).(RefView); !ok {
+		t.Fatalf("栈顶应当是 RefView，得到 %T", topOf(m))
+	}
+
+	// **字段名是 name/stats/quant/sims/err，不是 tn**
+	m, _ = m.Update(tensorScannedMsg{name: "t", stats: &model.Stats{Count: 8}})
+
+	m, _ = m.Update(key("esc"))
+	got := findTensorView(m)
+	if got == nil {
+		t.Fatal("栈里找不到 TensorView")
+	}
+	if got.tn.Stats == nil {
+		t.Error("扫描结果被栈顶视图吃掉了（tn.Stats 仍为 nil）")
+	}
+	if got.scanning {
+		t.Error("scanning 仍为 true —— spinner 会永远转下去")
+	}
+}
+
+// 模型库首屏的 Fill 结果同理：被栈顶吃掉的话，回来时进度行
+// 永远停在 0/N，那些行的格式与参数量永远是空的。
+func TestApp_库填充结果不被栈顶吃掉(t *testing.T) {
+	lib := NewLibrary()
+	lib.items = []discover.Item{{Name: "m", Path: "/x"}}
+	lib.gen = 1
+
+	var m tea.Model = New(lib)
+	m, cmd := m.Update(key("?"))
+	if cmd == nil {
+		t.Fatal("按 ? 应当返回一个压栈命令")
+	}
+	m, _ = m.Update(cmd())
+	if _, ok := topOf(m).(RefView); !ok {
+		t.Fatalf("栈顶应当是 RefView，得到 %T", topOf(m))
+	}
+
+	filled := discover.Item{Name: "m", Path: "/x", Format: "GGUF"}
+	m, _ = m.Update(itemFilledMsg{index: 0, item: filled, gen: 1})
+
+	m, _ = m.Update(key("esc"))
+	got := findLibrary(m)
+	if got == nil {
+		t.Fatal("栈里找不到 Library")
+	}
+	if got.filled != 1 {
+		t.Errorf("filled = %d, want 1 —— Fill 结果被栈顶吃掉了", got.filled)
+	}
+	if got.items[0].Format != "GGUF" {
+		t.Errorf("条目没被填充：%+v", got.items[0])
+	}
+}
