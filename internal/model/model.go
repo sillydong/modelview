@@ -7,6 +7,7 @@ package model
 import (
 	"cmp"
 	"slices"
+	"strings"
 )
 
 // Format 是模型文件的容器格式。
@@ -236,7 +237,19 @@ type Stats struct {
 
 // Model 是一个已解析的模型文件。
 type Model struct {
-	Path     string    `json:"path"`
+	Path string `json:"path"`
+
+	// Name 是**发现层给的**可读名字（如 ollama 的 `qwen2.5:3b`）。
+	//
+	// 解析层填不了它 —— 内容寻址的 blob 路径里没有模型信息，
+	// 名字只有读 manifest 才知道。所以裸路径解析（`--json <file>`）时
+	// 它是空的，由知道名字的调用方填（TUI 的 ModelView 解析完就填）。
+	//
+	// **下游视图靠它**：张量列表、条目页拿到的都是同一个 *Model 指针，
+	// 名字写在模型上，它们不必各自再传一遍 —— 实测原来张量列表标题
+	// 打的是 `sha256-5ee4f07c…` 这种 blob 名，与上一屏的 `qwen2.5:3b`
+	// 对不上，用户会以为点进了另一个模型。
+	Name     string    `json:"name,omitempty"`
 	Format   Format    `json:"format"`
 	Version  string    `json:"version"`
 	FileSize int64     `json:"file_size"`
@@ -280,6 +293,28 @@ type Model struct {
 	// Warnings 记录解析过程中被降级处理、但用户应当知道的问题。
 	// 例如未收录的量化类型导致占用大小算不出来。
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+// DisplayName 是界面上该显示的名字：优先用发现层给的名字，
+// 没有才退回文件名。
+//
+// **放在 model 上而不是各视图各写一份**：同一个模型的标题栏、张量列表、
+// 条目页三处都要显示它。写三份的话改一处漏一处不会有编译错误，
+// 而表现是"同一屏里同一个模型有两个名字"（实测：标题栏是 qwen2.5:3b、
+// 点进张量列表变成 sha256-5ee4f07c…）。
+//
+// 接收者是指针且容忍 nil：视图在解析完成前会拿它渲染加载态。
+func (m *Model) DisplayName() string {
+	if m == nil {
+		return ""
+	}
+	if m.Name != "" {
+		return m.Name
+	}
+	if i := strings.LastIndex(m.Path, "/"); i >= 0 {
+		return m.Path[i+1:]
+	}
+	return m.Path
 }
 
 // TotalParams 返回所有张量的元素总数。

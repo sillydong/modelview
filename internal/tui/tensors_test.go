@@ -423,3 +423,28 @@ func TestTensorsView_窄终端不崩(t *testing.T) {
 		t.Errorf("宽度 17：头部没渲染完整:\n%s", out)
 	}
 }
+
+// 张量列表的标题必须与上一屏（模型页标题栏）显示同一个名字 ——
+// 它原来直接用 baseName(m.Path)，而 ollama 的路径是内容寻址的 blob，
+// 于是从 qwen2.5:3b 点进来之后标题变成了 sha256-5ee4f07c…，
+// 用户会以为点进了另一个模型。
+func TestTensorsView_标题用显示名而不是blob路径(t *testing.T) {
+	const blob = "/Users/x/.ollama/models/blobs/sha256-5ee4f07cdb9beadbbb293e85803c569b"
+	m := &model.Model{
+		Path: blob, Name: "qwen2.5:3b",
+		Tensors: []*model.Tensor{{Name: "a", Dtype: model.DtypeF32}},
+	}
+	got := NewTensorsView(m).Title()
+	if !strings.Contains(got, "qwen2.5:3b") {
+		t.Errorf("标题里没有显示名:\n%s", got)
+	}
+	if strings.Contains(got, "sha256-") {
+		t.Errorf("标题里出现了 blob 名:\n%s", got)
+	}
+
+	// 没有名字时（裸路径解析）退回文件名仍然是可接受的行为
+	plain := NewTensorsView(&model.Model{Path: "/x/model.gguf", Tensors: m.Tensors}).Title()
+	if !strings.Contains(plain, "model.gguf") {
+		t.Errorf("没有显示名时应当退回文件名:\n%s", plain)
+	}
+}

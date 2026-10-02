@@ -74,20 +74,20 @@ func (v TensorsView) Title() string {
 	switch {
 	case v.dtype != "" && v.filter != "":
 		return fmt.Sprintf("张量 · %s · %s + %q（%d 个）",
-			baseName(v.m.Path), v.dtype, v.filter, len(v.shown()))
+			v.m.DisplayName(), v.dtype, v.filter, len(v.shown()))
 	case v.dtype != "":
 		return fmt.Sprintf("张量 · %s · %s（%d 个）",
-			baseName(v.m.Path), v.dtype, len(v.shown()))
+			v.m.DisplayName(), v.dtype, len(v.shown()))
 	case v.seg != "" && v.filter != "":
 		return fmt.Sprintf("张量 · %s · 段 %s + %q（%d 个）",
-			baseName(v.m.Path), v.seg, v.filter, len(v.shown()))
+			v.m.DisplayName(), v.seg, v.filter, len(v.shown()))
 	case v.seg != "":
 		return fmt.Sprintf("张量 · %s · 段 %s（%d 个）",
-			baseName(v.m.Path), v.seg, len(v.shown()))
+			v.m.DisplayName(), v.seg, len(v.shown()))
 	case v.filter != "":
-		return fmt.Sprintf("张量 · %s（过滤：%s）", baseName(v.m.Path), v.filter)
+		return fmt.Sprintf("张量 · %s（过滤：%s）", v.m.DisplayName(), v.filter)
 	}
-	return fmt.Sprintf("张量 · %s（共 %d 个）", baseName(v.m.Path), len(v.m.Tensors))
+	return fmt.Sprintf("张量 · %s（共 %d 个）", v.m.DisplayName(), len(v.m.Tensors))
 }
 
 func (v TensorsView) Init() tea.Cmd { return nil }

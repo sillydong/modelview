@@ -112,3 +112,29 @@ func TestModel_归档前缀(t *testing.T) {
 		t.Errorf("ArchivePrefix = %q", p.ArchivePrefix)
 	}
 }
+
+// DisplayName 优先用发现层给的名字，没有才退回文件名。
+//
+// 这条是"同一屏里同一个模型有两个名字"的回归：原来标题栏用
+// ModelView 的 displayName（优先用模型库给的名字），而张量列表用
+// baseName(m.Path) —— ollama 的路径是 blobs/sha256-5ee4f07c…，
+// 于是点进张量列表后标题从 qwen2.5:3b 变成了那串哈希。
+func TestModel_DisplayName(t *testing.T) {
+	blob := "/Users/x/.ollama/models/blobs/sha256-5ee4f07cdb9beadbbb293e85803c569b"
+	tests := []struct {
+		name string
+		m    *Model
+		want string
+	}{
+		{"有名字时用名字", &Model{Path: blob, Name: "qwen2.5:3b"}, "qwen2.5:3b"},
+		{"没名字时退回文件名", &Model{Path: blob}, "sha256-5ee4f07cdb9beadbbb293e85803c569b"},
+		{"没有目录的路径", &Model{Path: "model.gguf"}, "model.gguf"},
+		{"空路径", &Model{}, ""},
+		{"nil 接收者不 panic", nil, ""},
+	}
+	for _, tt := range tests {
+		if got := tt.m.DisplayName(); got != tt.want {
+			t.Errorf("%s: DisplayName() = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

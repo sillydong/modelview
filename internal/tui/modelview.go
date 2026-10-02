@@ -153,8 +153,17 @@ func (v ModelView) Init() tea.Cmd {
 		return nil
 	}
 	path := v.pendingPath
+	name := v.name
 	return func() tea.Msg {
 		m, err := parser.Parse(path)
+		if err == nil && m != nil {
+			// **名字写在模型上，下游视图才看得到**：张量列表与条目页
+			// 拿到的都是这个 *Model，各自再传一遍名字要改四个构造函数的
+			// 签名（含 jump.go 那两条没有名字可传的路径）。
+			// 不写的话张量列表标题打的是 blob 名（`sha256-5ee4f07c…`），
+			// 与上一屏的模型名对不上。
+			m.Name = name
+		}
 		return modelLoadedMsg{m: m, err: err}
 	}
 }
@@ -967,18 +976,17 @@ func joinHorizontal(left, right string) string {
 	return strings.Join(lines, "\n")
 }
 
-// displayName 是标题栏里显示的名字：优先用模型库给的名字，
-// 没有才退回文件名。
+// displayName 是标题栏里显示的名字。
+//
+// **判据交给 model.Model.DisplayName**：张量列表与条目页也要显示
+// 同一个名字，三处各写一份的话改一处漏一处不会有编译错误 ——
+// 而表现是同一屏里同一个模型有两个名字（实测过：标题栏是 qwen2.5:3b、
+// 点进张量列表变成 sha256-5ee4f07c…）。
+//
+// v.name 先判是因为这一屏在解析完成前也要能渲染（加载态还没有 m）。
 func (v ModelView) displayName() string {
 	if v.name != "" {
 		return v.name
 	}
-	return baseName(v.m.Path)
-}
-
-func baseName(p string) string {
-	if i := strings.LastIndex(p, "/"); i >= 0 {
-		return p[i+1:]
-	}
-	return p
+	return v.m.DisplayName()
 }
