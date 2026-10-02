@@ -83,6 +83,17 @@ func simulateTarget(vals []float32, d model.Dtype, srcBits float64) model.QuantS
 		return s
 	}
 
+	// 显著值相对误差的阈值：张量峰值的 5e-2。
+	// 只算一次，循环里两个口径共用（见 model.QuantSim.MaxRelErrSig 的
+	// 实测数据：固定 1e-20 时一半的模拟恰好等于 1，5e-2 时一条都没有）。
+	peak := 0.0
+	for _, v := range vals {
+		if av := math.Abs(float64(v)); av > peak && !math.IsInf(av, 0) {
+			peak = av
+		}
+	}
+	sigFloor := peak * 5e-2
+
 	var sumAbs, sumSq, sumErrSq float64
 	var finite int64
 	for i, v := range vals { // 只统计原值那部分，不含补的零
@@ -107,9 +118,17 @@ func simulateTarget(vals []float32, d model.Dtype, srcBits float64) model.QuantS
 		sumErrSq += e * e
 		s.MaxAbsErr = math.Max(s.MaxAbsErr, e)
 		// 相对误差的分母接近 0 时会变成 Inf —— 权重里有大量接近 0 的值，
-		// 只在原值够大时才计入
+		// 只在原值够大时才计入。
+		//
+		// **两个口径并存**：MaxRelErr 保持原判据（契约不动），
+		// MaxRelErrSig 只统计显著值。分成两个 max 而不是一个循环里
+		// 各判一次，是因为两个阈值不同，混在一处迟早有人把其中一个
+		// 当成笔误删掉。
 		if denom := math.Abs(x); denom > 1e-20 {
 			s.MaxRelErr = math.Max(s.MaxRelErr, e/denom)
+		}
+		if denom := math.Abs(x); denom > sigFloor {
+			s.MaxRelErrSig = math.Max(s.MaxRelErrSig, e/denom)
 		}
 	}
 	// 分母是**有限值个数**：用样本总数会把被排除的那些当成误差 0 摊进去

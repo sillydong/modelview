@@ -598,3 +598,50 @@ func TestQuantAgg_全非有限(t *testing.T) {
 			q.NonFiniteScales, q.ScaleMin, q.ScaleMax)
 	}
 }
+
+// 「显著值」相对误差：只统计峰值 5e-2 以上的元素。
+//
+// 旧的 MaxRelErr 保留原口径（契约不破），但它被贴近 0 的元素支配：
+// 实测 nomic-embed 的 336 条模拟里 168 条（50%）恰好等于 1，
+// 另有 1.85e+05 这种 —— 那不是量化质量的度量，是最小那个元素的倒数。
+// 新字段在同一批数据上是 0 条恰好为 1、最大 1.12。
+func TestSimulateTarget_显著值相对误差(t *testing.T) {
+	vals := make([]float32, 4096)
+	for i := range vals {
+		vals[i] = float32(math.Sin(float64(i)*0.31)) * 0.02
+	}
+	vals[0] = 1e-9  // 远低于峰值 5e-2
+	vals[1] = -1e-7 // 同上
+
+	for _, d := range quantTargets {
+		s := simulateTarget(vals, d, 32)
+
+		// 旧口径**就是**该被近零元素支配 —— 这里钉住它没有被顺手改掉
+		if s.MaxRelErr < 1 {
+			t.Errorf("%s: 旧口径 MaxRelErr = %v，它应当仍被近零元素支配", d, s.MaxRelErr)
+		}
+		// 新口径必须有值：峰值那个元素总在阈值之上
+		if s.MaxRelErrSig <= 0 {
+			t.Errorf("%s: MaxRelErrSig = %v，峰值元素总该算进来", d, s.MaxRelErrSig)
+		}
+		// 而且要有界：4 位量化的步长约峰值的 1/15，阈值取 5e-2 时
+		// 最坏情况是 (步长/2)/(5e-2·峰值) ≈ 0.7
+		if s.MaxRelErrSig >= 2 {
+			t.Errorf("%s: MaxRelErrSig = %v，阈值没起作用（应当 < 2）", d, s.MaxRelErrSig)
+		}
+		// 两个口径独立：旧的大于等于新的
+		if s.MaxRelErrSig > s.MaxRelErr {
+			t.Errorf("%s: MaxRelErrSig(%v) > MaxRelErr(%v) —— 子集的最大值不可能更大",
+				d, s.MaxRelErrSig, s.MaxRelErr)
+		}
+	}
+}
+
+// 全零张量下两个口径都是 0，不能出现 NaN/Inf。
+func TestSimulateTarget_显著值相对误差_全零(t *testing.T) {
+	for _, s := range simulateAll(make([]float32, 256), 32) {
+		if s.MaxRelErr != 0 || s.MaxRelErrSig != 0 {
+			t.Errorf("%s 全零输入两个口径都该是 0，得到 %v / %v", s.Target, s.MaxRelErr, s.MaxRelErrSig)
+		}
+	}
+}
