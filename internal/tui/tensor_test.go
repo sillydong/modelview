@@ -435,3 +435,31 @@ func TestTensorView_分段不受扫描影响(t *testing.T) {
 		t.Error("扫描完成后名字分段消失了")
 	}
 }
+
+// **副本必须在构造命令时（主线程）就拷好**，不能挪进闭包。
+//
+// 闭包由 bubbletea 在另一个 goroutine 里执行，而共享的 tn 现在有两个
+// 写者：这个详情页自己的合并，与模型视图「扫描全部」（`a`）的合并 ——
+// 两个都在主线程做。在 goroutine 里拷就是在读一个可能正在被写的字段。
+//
+// 判据是"命令执行时看到的值是**造命令那一刻**的"：造好命令之后主线程
+// 改共享张量，扫描函数不该看见那次改动。
+func TestTensorView_副本在造命令时就拷好(t *testing.T) {
+	tn := &model.Tensor{Name: "w", Dtype: model.DtypeF32, ByteSize: 4, ParamCount: 1}
+	v := NewTensorView(fakeModel(), tn)
+	var sawStats *model.Stats
+	v.scan = func(_ context.Context, _ *model.Model, got *model.Tensor) error {
+		sawStats = got.Stats
+		return nil
+	}
+
+	cmd := v.scanCmd()
+	// 模拟批量扫描在这一刻合并了结果（同一个 *model.Tensor）
+	v.tn.Stats = &model.Stats{Count: 9}
+	cmd()
+
+	if sawStats != nil {
+		t.Error("扫描读到了造命令之后才写进去的统计 —— " +
+			"副本是在 goroutine 里拷的，与「扫描全部」的合并构成数据竞争")
+	}
+}

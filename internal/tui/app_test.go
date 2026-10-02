@@ -555,6 +555,12 @@ func allViews() []namedView {
 	// fixture 里带了 Errs，顺带把 wrapText 那条折行路径也纳进跨视图守卫。
 	warnLib := emptyLibraryWithWarnings()
 
+	// 扫描中 / 扫描完成两态：进度行是**另一条渲染分支**（View 里多拼一行、
+	// 并且把内容区高度扣掉一行），不摆出来的话"末尾不留换行"这条守卫
+	// 看不到它。走的是真实的链（这里没有 t 也能跑：只有两张张量）。
+	scanning := mv
+	scanning2, _ := scanning.Update(key(keyScanAll))
+
 	// **下面几档是为"帮助栏的分支"补的**（都走真实的按键路径）：
 	// 每类视图原先只有一个 fixture，于是另一些 Help 分支上的键掉了
 	// 没有任何测试会红（实测：把下面三支里的 `?` 删掉，全绿）。
@@ -593,6 +599,8 @@ func allViews() []namedView {
 		{"ModelView/张量", gotoSection(mv, sectionTensors)},
 		{"ModelView/量化分布", gotoSection(mv, sectionQuantDist)},
 		{"ModelView/速查表", gotoSection(mv, sectionRef)},
+		{"ModelView/扫描中", scanning2.(ModelView)},
+		{"ModelView/扫描完成", scanAllQuiet(loadModelView(fakeModel()))},
 		{"TensorsView", NewTensorsView(m)},
 		{"TensorView/扫描中", NewTensorView(m, m.Tensors[0])},
 		{"TensorView/已出结果", NewTensorView(m2, done)},
@@ -637,6 +645,24 @@ func TestViews_原始输出不留末尾换行(t *testing.T) {
 }
 
 // ===== `?` 全局速查表（spec §8.1"随时可开"）=====
+
+// scanAllQuiet 把「扫描全部」跑到结束（假扫描，不碰磁盘）。
+//
+// 只有两张张量，所以循环有界；上界也写出来，免得哪天实现坏了变成
+// 一条跑到测试超时的死循环（那种失败比断言失败难查得多）。
+func scanAllQuiet(v ModelView) ModelView {
+	v.scan = fakeScan(nil)
+	next, cmd := v.Update(key(keyScanAll))
+	v = next.(ModelView)
+	for range len(v.m.Tensors) + 1 {
+		if cmd == nil {
+			break
+		}
+		next, cmd = v.Update(cmd())
+		v = next.(ModelView)
+	}
+	return v
+}
 
 // **任何非模态的地方按 `?` 都能开速查表**，Esc 逐层退回。
 func TestApp_问号随处可开(t *testing.T) {
@@ -753,10 +779,14 @@ func TestApp_模型库按问号没有上下文(t *testing.T) {
 // 这条**必须经过根视图**：直接调 view.Update 绕过了全局按键那一层，
 // 而"根视图把按键吞了"正是那一层的事（app.go 开头那段注释讲的漏法）。
 //
-// **`a` 今天不在这一格**：根视图里没有全局 `a`（它只归 ModelView），
-// 所以它走的是兜底转发那条路 —— 等它将来变成全局键时再加进来。
-func TestApp_输入态下的问号进的是过滤词(t *testing.T) {
-	for _, k := range []string{keyHelp} {
+// **两格今天证明的东西不一样，别当成一样强**：
+//   - `?`：根视图里真的有那条全局分支，判据挪到模态判定之前这格就会红
+//     （变异验证过）；
+//   - `a`：根视图里**没有**全局 `a`（它只归 ModelView），所以这格今天
+//     走的是兜底转发那条路 —— 它守的是"将来有人把 `a` 加进全局 switch 时
+//     别加在模态判定之前"，而不是现存的某个分支。
+func TestApp_模态下可打印键不被全局抢走(t *testing.T) {
+	for _, k := range []string{keyHelp, keyScanAll} {
 		t.Run(k, func(t *testing.T) {
 			root := New(fakeView{title: "根"})
 			pushed, _ := root.Update(pushMsg{v: newTensors(fakeModelWithTensors(3))})

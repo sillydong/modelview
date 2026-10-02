@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/sillydong/modelview/internal/analyze"
 	"github.com/sillydong/modelview/internal/humanize"
 	"github.com/sillydong/modelview/internal/model"
 	"github.com/sillydong/modelview/internal/parser"
@@ -18,6 +20,34 @@ import (
 type modelLoadedMsg struct {
 	m   *model.Model
 	err error
+}
+
+// batchScannedMsg 是「扫描全部」里一张张量扫完的结果。
+//
+// 与 tensorScannedMsg **分开而不是加一个 index 字段复用**：那个是
+// TensorView 的消息（它按**张量名**认领），这个是 ModelView 的
+// （它按**位次**认领）—— 判据不同，而混在一起的表现是"一条消息被
+// 另一个视图收下"，合并到一张不相干的张量上，不报任何错。
+//
+// m 与 idx 一起构成认领判据：指针相同才算同一个模型（用户退回模型库、
+// 换一个模型再进来时，上一轮在途的消息会落在新 ModelView 上）；
+// 位次要正好是这一刻在等的那一个（取消后重启会留下上一轮的残影，
+// 它的位次对不上，被丢掉）。
+//
+// **判据认不出的那一类**：残影的位次与新链在等的那一个**恰好相同**
+// （取消、重启，两边都在等第 0 张）。它会被收下 —— 同一张量、同一个
+// 计算，内容与新一轮本来要算的逐字节相同，收下无害，所以没有为此加
+// 世代号。**将来若把合并换成非幂等的动作**（写缓存、累加计数、
+// 换采样上限），这里必须先加一个世代号，否则残影会被当成这一轮的结果。
+type batchScannedMsg struct {
+	m   *model.Model
+	idx int
+	err error
+
+	// 下面是副本上算出来的结果，**合并只在 Update（主线程）里做**。
+	stats *model.Stats
+	quant *model.QuantInfo
+	sims  []model.QuantSim
 }
 
 // section 是左栏的导航项。
@@ -57,11 +87,29 @@ type ModelView struct {
 	cursor      int
 	focus       focus
 	metaCursor  int
+
+	// scan 是单张量分析，注入是为了测试不碰真实文件
+	//（与 TensorView.scan 同一个理由）。真的那个要读几秒磁盘。
+	scan func(context.Context, *model.Model, *model.Tensor) error
+
+	// 下面三个是「扫描全部」（`a`）的状态。**放在 ModelView 里而不是
+	// 根 Model**：扫的是这个模型的张量、进度行也画在这一屏上，
+	// 而根视图连"现在是哪个模型"都不知道（那正是 ContextModel 的理由）。
+	//
+	// 「扫完了」与「取消了」都不单独存字段：
+	//   - 扫完 ⇔ scanDone == len(m.Tensors)。取消**不可能**留下这个状态 ——
+	//     走满那一帧 scanning 已经被置回 false 了（见 Update 那条分支），
+	//     所以取消之后按 a 是重新开始，不是"接着取消"；
+	//   - 取消之后进度行整行消失（用户自己的动作，不需要收尾信号），
+	//     不用再存一个"取消过"的标志。
+	scanning   bool
+	scanDone   int
+	scanFailed int
 }
 
 // NewModelView 用一个已解析的模型造视图（测试与"已经有 m"的场景用）。
 func NewModelView(m *model.Model) ModelView {
-	return ModelView{m: m}
+	return ModelView{m: m, scan: analyze.One}
 }
 
 // NewModelViewFromPath 从文件路径造视图，解析在 Init 里异步做。
@@ -73,7 +121,7 @@ func NewModelView(m *model.Model) ModelView {
 // 路径的最后一段 —— 而 ollama 的路径是 blobs/sha256-7121486771cbfe2...，
 // 一长串哈希对用户毫无意义（实测在真终端里就是这样）。
 func NewModelViewFromPath(path, name string) ModelView {
-	return ModelView{pendingPath: path, name: name}
+	return ModelView{pendingPath: path, name: name, scan: analyze.One}
 }
 
 // ContextModel 实现 modelProvider：根视图按 `?` 时靠它把"当前模型"
@@ -120,6 +168,42 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 		v.m, v.err = msg.m, msg.err
 		return v, nil
 
+	case batchScannedMsg:
+		// **三条认领判据缺一条就是一种静默串数据**（理由见 batchScannedMsg）。
+		// 丢弃不是错误：取消之后回来的、别的模型的、上一轮重启留下的
+		// 残影都走这里 —— 它们本来就该被丢掉，且不该让链继续。
+		if msg.m != v.m || !v.scanning || msg.idx != v.scanDone {
+			return v, nil
+		}
+		if msg.err != nil {
+			// **失败的那一张什么都不合并**，只记一个失败数。
+			//
+			// 这条链的副本是**派发时**拷的，而同一张 tn 上还有第二个写者
+			//（用户点开详情页时 TensorView 的合并）。把一份旧副本的结果
+			// 无条件写回去，就可能用一个"空结果"把用户刚算出来的真结果
+			// 清掉 —— 两边都没有版本号，判不出新旧，那就**别写**。
+			// 于是失败一律不落地：与 CLI 路径（analyzeOne 直接写真实的 tn，
+			// 失败前算出来那半份会留下）刻意不同，差别在于那边没有第二份
+			// 副本可用，也没有第二个写者。
+			//
+			// 不落地等于保持"还没算"：NeedsWork 仍为真，再按一次 `a` 会重试。
+			// 失败**计数**要显示出来，否则用户不知道有张量没算出来
+			//（进度行里那句"失败 N"就是它唯一的显示位置）。
+			v.scanFailed++
+		} else {
+			// **合并必须在主线程做** —— 这正是 scanOneCmd 先拷副本的原因。
+			tn := v.m.Tensors[msg.idx]
+			tn.Stats, tn.Quant, tn.QuantSims = msg.stats, msg.quant, msg.sims
+		}
+		v.scanDone++
+		if v.scanDone == len(v.m.Tensors) {
+			// **扫完必须停**：这里返回下一条命令的话，链会一直自我调度下去
+			//（多走一轮永远走不完的空转），用户按不停，界面每帧都在重绘。
+			v.scanning = false
+			return v, nil
+		}
+		return v, v.scanOneCmd(v.scanDone)
+
 	case selectMetaMsg:
 		// **越界就整个丢弃**：从速查表跳回来时，模型理论上没变，
 		// 但"理论上"不是保证 —— 越界索引会在下一帧 panic
@@ -154,6 +238,44 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 			v = v.move(-1)
 		case "down", "j":
 			v = v.move(1)
+		case keyScanAll:
+			// 扫描中再按一次 = 取消。**已经扫出来的结果留着**（One 是就地
+			// 填 tn.Stats，天然如此）—— 回滚等于把用户等的时间丢掉。
+			//
+			// 取消只做两件事：不再调度下一条、进度行消失。在途那一条回来时
+			// 会被 batchScannedMsg 那条判据丢掉（scanning 已经是 false）。
+			// 没有 ctx 可以取消 —— 那要 One 的签名带一个能被外部取消的 ctx，
+			// 而它一次只扫一张、最多几秒，丢弃结果比改签名划算。
+			//
+			// **它同时是"链被钉住"之后的那条出路**：扫描中往栈上推任何
+			// 视图（`?` 开速查表、Enter 进张量列表）都会让在途的那条结果
+			// 落在新栈顶、链停在原地（实测：扫描中按 `?`，进度冻在 7/434
+			// 不动，按键还在响应）。此时按 `a` 取消、再按 `a` 重扫就能接上
+			// —— 已经扫过的那批 NeedsWork 为假，One 直接返回，是瞬时的。
+			//
+			// # 这条路径与 CLI 的 --stats 不是一回事（取舍，别顺手"修"）
+			//
+			// 它走的是 analyze.One —— 那个函数按 Task 4 的契约**不碰缓存**，
+			// 所以在这里扫完之后，CLI 的 `--stats` 下次仍然要重算（缓存里没有）。
+			// 这是**刻意保留**的两条路径：
+			//   - `--stats` 走 Analyze：整份模型一次算完、写缓存；
+			//   - `a` 走 One：逐张量、要进度、要能取消，结果只在内存里
+			//     （再点开详情页是瞬时的，因为 NeedsWork 看的是 tn.Stats）。
+			//
+			// 为什么不给 One 加缓存写入来"顺带解决"：往整份模型的缓存里
+			// 写单张量就是**部分写入** —— 下次全量扫描会"看起来命中了、
+			// 其实缺一半"，而那类故障不报错，只是数字少了几块
+			//（one.go 里写着这条）。进度要的是逐张量粒度，缓存只认整份，
+			// 两者的粒度对不上，不能混在一个写入点里。
+			if v.scanning {
+				v.scanning = false
+				return v, nil
+			}
+			if !v.canScan() {
+				return v, nil
+			}
+			v.scanning, v.scanDone, v.scanFailed = true, 0, 0
+			return v, v.scanOneCmd(0)
 		case "enter":
 			// **模型还没解析完时 Enter 什么也不做**：这时推入的任何子视图
 			// 都会拿到一个 nil 的 *model.Model，而它们全都无保护地取
@@ -187,6 +309,93 @@ func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 		}
 	}
 	return v, nil
+}
+
+// canScan 表示 `a` 现在真的扫得动。
+//
+// 两个条件：模型解析出来了、且真的有张量。缺一个时按 `a` 什么也不做，
+// 所以 Help() 读同一个判据决定列不列它 —— keys.go 那条"列了不支持的
+// 等于骗用户按"对这里同样成立（空模型那一屏列"a 扫描全部"就是这句话）。
+func (v ModelView) canScan() bool { return v.m != nil && len(v.m.Tensors) > 0 }
+
+// scanOneCmd 造一条"扫第 i 个张量"的命令。
+//
+// **副本在构造命令时（主线程）就拷好，不放进闭包**：闭包由 bubbletea
+// 在另一个 goroutine 里执行，而这张 tn 上的写者有**两个** —— 这条链
+// 自己的合并，以及用户点开同一张量详情页时 TensorView 的合并，两个
+// 都在主线程。在 goroutine 里拷就是在读一个可能正在被写的字段：
+// 窗口极窄（两边各自都是一瞬间的事），但它不需要窗口多大才算竞争。
+//
+// TensorView.scanCmd 的形状与此完全一致（也是先拷再进闭包）——
+// 它那一处是这一版顺手改的：这条链给共享的 tn 添了第二个写者。
+//
+// 一次一条、回来了再发下一条：没有长期存活的 goroutine、没有 channel，
+// 共享可写状态也只剩两处 Update（这条链的、TensorView 的），
+// 都在主线程 —— 两个写者之间没有版本号可判新旧，所以只在**成功**时写
+// （见 Update 里那条分支），失败的旧副本不落地。
+func (v ModelView) scanOneCmd(i int) tea.Cmd {
+	m, scan := v.m, v.scan
+	cp := *m.Tensors[i]
+	return func() tea.Msg {
+		err := scan(context.Background(), m, &cp)
+		return batchScannedMsg{
+			m: m, idx: i, err: err,
+			stats: cp.Stats, quant: cp.Quant, sims: cp.QuantSims,
+		}
+	}
+}
+
+// scanHelp 是 `a` 那一格的帮助文字。
+//
+// 三个状态各一句：扫描中是"取消"、有张量可扫是"扫描全部"，
+// 都没有（模型还没解析出来 / 这个文件里没有张量）**什么都不列**。
+// （`a` 与 CLI 的 `--stats` 是两条不同的路径，取舍写在 Update 里
+// 那条 case keyScanAll 分支上。）
+func (v ModelView) scanHelp() string {
+	switch {
+	case v.scanning:
+		return keyScanAll + " 取消"
+	case v.canScan():
+		return keyScanAll + " 扫描全部"
+	}
+	return ""
+}
+
+// scanLine 是内容区顶部那一行扫描状态；没扫过（或取消之后）返回空串。
+//
+// **它占满整个内容区一行**（跨左右两栏）：挤在某一栏的右栏里的话，
+// 用户按 ↑↓ 换个栏目进度就没了 —— 而扫描是后台在跑的，看不见就等于
+// 不知道它还在不在跑。
+//
+// **扫完之后不消失，换成一行"扫描完成"**：这是整条链唯一的收尾信号，
+// 也是失败计数唯一的显示位置（张量列表与详情页都不显示"有 N 个没算出来"）。
+// 直接消失的话，用户分不清"扫完了"与"链断了"（比如中途按 `?` 推入
+// 速查表，回来的消息落在新栈顶、链会停在原地），而失败信息会被静默丢掉
+// —— 那是本仓反复踩过的那类问题。代价是常驻一行，再按 `a` 会刷新它。
+//
+// **取消之后不显示**：那是用户自己的动作，不需要收尾信号；已经扫出来的
+// 结果就在张量里（详情页点开是瞬时的），没有信息被丢掉。
+//
+// 不做百分比（Task 5 已经写过理由）：剩余时间估不出来，而一个会跳的
+// 百分比比"123/434"更容易被当成承诺。
+func (v ModelView) scanLine() string {
+	switch {
+	case v.scanning:
+		line := fmt.Sprintf("正在扫描张量… %d/%d", v.scanDone, len(v.m.Tensors))
+		if v.scanFailed > 0 {
+			line += fmt.Sprintf(" · 失败 %d", v.scanFailed)
+		}
+		return styleHint.Render(line + "（" + keyScanAll + " 取消）")
+	case v.scanDone > 0 && v.scanDone == len(v.m.Tensors):
+		line := fmt.Sprintf("扫描完成 %d/%d", v.scanDone, len(v.m.Tensors))
+		if v.scanFailed > 0 {
+			// **失败那半句不能只是灰色小字**：它是这一屏唯一一处
+			// 说"有张量没算出来"的地方
+			return styleWarn.Render(line + fmt.Sprintf(" · 失败 %d", v.scanFailed))
+		}
+		return styleHint.Render(line)
+	}
+	return ""
 }
 
 // hasBodyCursor 表示当前栏目的右栏内容**有可选项**。
@@ -309,6 +518,9 @@ func (v ModelView) opensOnEnter() bool {
 }
 
 func (v ModelView) Help() []string {
+	// `?` 与 `a` 两格由 scanHelp / keyHelp 提供：`a` 有时真的没有动作
+	//（模型还没解析出来、或这个文件里没有张量），那时 scanHelp 返回空串。
+	scan := v.scanHelp()
 	if v.focus == focusBody {
 		// **右栏焦点下的 Enter 也要走 opensOnEnter**：原先把"Enter 查速查表"
 		// 写死在这一支里，于是光标往下走到某条 custom.*（跳不动）时，
@@ -319,6 +531,9 @@ func (v ModelView) Help() []string {
 			bindings = append(bindings, keyEnter+" 查速查表")
 		}
 		bindings = append(bindings, keyTab+" 回到栏目", keyHelp+" 速查表")
+		if scan != "" {
+			bindings = append(bindings, scan)
+		}
 		return append(bindings, keyEsc+" 返回", keyQuit+" 退出")
 	}
 	bindings := []string{keyUp + " " + keyDown + " 切换栏目"}
@@ -329,6 +544,9 @@ func (v ModelView) Help() []string {
 		bindings = append(bindings, keyEnter+" 打开")
 	}
 	bindings = append(bindings, keyHelp+" 速查表")
+	if scan != "" {
+		bindings = append(bindings, scan)
+	}
 	return append(bindings, keyEsc+" 返回", keyQuit+" 退出")
 }
 
@@ -344,7 +562,28 @@ func (v ModelView) View(width, height int) string {
 	// **这里不做截断**：根视图的 padTo 已经按终端宽度统一截过了，
 	// 各层再截一遍会出现"同一行在两层里算出的宽度不一样"。
 	bodyWidth := width - navWidth - 1
-	return joinHorizontal(nav, v.body(bodyWidth, height))
+
+	line := v.scanLine()
+	if line == "" {
+		return joinHorizontal(nav, v.body(bodyWidth, height))
+	}
+	// 进度行那一行是**从内容区里扣的**：这一层交给根视图的原始输出
+	// 不能比给定的高度多一行（多了的话 padTo 会砍掉各栏目自己算好的
+	// 最后一行 —— 元数据那一栏正是它的"显示第 N–M 条"，换上一句
+	// 措辞更差的"…还有 N 行没显示"）。
+	//
+	// 扣掉的这一行**是看得出来的**：同一个高度下，元数据那一栏的范围
+	// 提示从"1–17"变成"1–18"（条数差一条）。它只在专门盯这句话的
+	// TestModelView_进度行从内容区里扣 里才红 —— 变异验证实测过：
+	// 去掉这个 -1，其余测试（包括那些数行数的）全绿。
+	//
+	// **高度 1 是唯一的例外，而且这一行在那里保不住**：padTo 截断时
+	// 保留的是前 h-1 行（h=1 时一行都不保留），所以进度行照样被它那句
+	// "…还有 N 行没显示"顶掉。`max(..., 1)` 只是保证 body 拿到的不是 0，
+	// 不是为了在高度 1 时显示进度行 —— 那种终端（总高 ≤3 行）里
+	// 两者不可能同时显示，谁也救不了。
+	bodyHeight := max(height-1, 1)
+	return line + "\n" + joinHorizontal(nav, v.body(bodyWidth, bodyHeight))
 }
 
 // nav 渲染左栏，返回内容与它的**显示宽度**。

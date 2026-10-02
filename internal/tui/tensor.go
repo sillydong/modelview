@@ -130,10 +130,16 @@ func (v TensorView) Modal() bool { return false }
 // 一写一读就是数据竞争 —— 表现是"偶尔显示半个统计"，
 // 只有 -race 才能稳定看到。在副本上算、回主线程再合并，
 // 共享可写状态就只剩 Update 这一处。
+//
+// **副本在构造命令时（主线程）就拷好，不放进闭包**：闭包在另一个
+// goroutine 里跑，而这张 tn 现在有第二个写者了 —— 模型视图的
+// 「扫描全部」（`a`）会在主线程就地把结果合并进**同一个** *model.Tensor。
+// 在 goroutine 里拷就是在读一个可能正在被写的字段：窗口极窄
+// （两边各自都是一瞬间的事），但它不需要窗口多大才算竞争。
 func (v TensorView) scanCmd() tea.Cmd {
 	m, tn, scan := v.m, v.tn, v.scan
+	cp := *tn
 	return func() tea.Msg {
-		cp := *tn
 		err := scan(context.Background(), m, &cp)
 		return tensorScannedMsg{
 			name: tn.Name, stats: cp.Stats, quant: cp.Quant,
