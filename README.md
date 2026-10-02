@@ -330,9 +330,8 @@ NaN / Inf **只计数，不参与** min / max / mean / std —— 否则一个 I
 因此设了 8 MiB 的样本预算（`1<<21` 个样本 × 4 字节，蓄水池抽样、种子固定），超预算时 JSON 里置
 `scale_median_sampled: true`。**min / max / 均值 / 零计数 / 最扁 任何时候都是全量精确的。**
 
-> 本节引用的实测数字（统一公式的 6.26 dB 摆动、`max_rel_err` 的 168/336、块复现率）出自
-> [设计文档 §6.2](docs/superpowers/specs/2026-09-26-modelview-design.md)，
-> 那里有完整测量过程与复现命令；这里只留结论。
+> 上面那几个数字的复现路径是 `tools/compare_uniform_formula.go`
+> （跑 `go run tools/compare_uniform_formula.go`）。
 
 ### 内存
 
@@ -426,11 +425,6 @@ python3 tools/check_readme.py           # 本文档与代码的名字/路径是�
 - K 系列量化模拟的门禁是**解码值复现率**而非字节一致率：子块存在符号规范自由度
   （`(d, sc, q)` 与 `(-d, -sc, 64-q)` 是同一批数值），实测 Q6_K 40/40、Q4_K 39/40 个真实块数值完全相同
 - IQ 系列与 NVFP4 / MXFP4 只收录块结构，不解码
-
-## 设计文档
-
-- [设计文档](docs/superpowers/specs/2026-09-26-modelview-design.md) —— 目标、非目标、各格式解析要点、判据取舍与实测依据
-- [实施计划](docs/superpowers/plans/) —— 分阶段的实现计划
 
 ## 许可证
 
