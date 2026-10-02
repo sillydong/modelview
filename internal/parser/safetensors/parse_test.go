@@ -274,3 +274,27 @@ func TestSafetensorsDtypes_规范取值齐全(t *testing.T) {
 			"多出来的要确认是否真的存在", len(got), len(want))
 	}
 }
+
+// 没有 __metadata__ 时 Metadata 必须是**空切片**，不能是 nil。
+//
+// nil 切片会被 encoding/json 序列化成 `"metadata": null`，而 null 对
+// 严格类型的消费方（Go 的 []MetaKV、Rust、TS 的非可选数组）是类型错误 ——
+// [] 才是"空的集合"。实测：这一条与 pytorch 那条都漏了初始化，
+// 只有 GGUF 的构造点写了 make(...)。
+func TestParse_无metadata时是空切片(t *testing.T) {
+	// buildFile 不写 __metadata__
+	p := writeFile(t, "nom.gguf", buildFile(t, map[string]any{
+		"w": map[string]any{"dtype": "F32", "shape": []int64{4}, "data_offsets": []int64{0, 16}},
+	}, make([]byte, 16)))
+
+	m, err := Parse(p)
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if m.Metadata == nil {
+		t.Error("Metadata 是 nil —— 序列化出来会是 null 而不是 []")
+	}
+	if len(m.Metadata) != 0 {
+		t.Errorf("Metadata 有 %d 条，want 0", len(m.Metadata))
+	}
+}

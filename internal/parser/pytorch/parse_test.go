@@ -410,3 +410,18 @@ func TestParse_连续二维张量不标记(t *testing.T) {
 		t.Errorf("shape=[2 2] stride=[2 1] 是连续布局，不该被标记")
 	}
 }
+
+// Metadata 必须是空切片而不是 nil —— nil 会被序列化成 `"metadata": null`。
+//
+// 这个格式**从来**不填 Metadata（.pt 里没有 GGUF 那种键值元数据），
+// 所以它原来在所有 .pt 上都输出 null，而不是这一种格式偶尔的边界。
+func TestParse_PyTorch的metadata是空切片(t *testing.T) {
+	p := write(t, "m.pt", buildPT(t, "weird-prefix"))
+	m, err := Parse(p)
+	if err != nil {
+		t.Fatalf("Parse 失败: %v", err)
+	}
+	if m.Metadata == nil {
+		t.Error("Metadata 是 nil —— 所有 .pt 的 --json 都会是 \"metadata\": null")
+	}
+}

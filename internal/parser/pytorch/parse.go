@@ -63,6 +63,10 @@ func Parse(path string) (*model.Model, error) {
 		Version:  "zip/" + orDash(lay.FormatVersion),
 		FileSize: st.Size(),
 		Tensors:  make([]*model.Tensor, 0, len(recs)),
+		// **空切片而不是 nil**：这个格式从来不填 Metadata（.pt 里没有
+		// GGUF 那种键值元数据），所以 nil 会让**每一个** .pt 的 --json
+		// 都输出 `"metadata": null` —— 不是偶发边界，是常态。
+		Metadata: make([]model.MetaKV, 0),
 		// DataStart 留 0：ZIP 容器没有单一的数据区起点，
 		// 按 model.Model 的约定 0 即表示"该格式无此概念"。
 		//

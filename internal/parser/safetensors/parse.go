@@ -53,11 +53,15 @@ func Parse(path string) (*model.Model, error) {
 	dataStart := int64(8) + int64(headerLen)
 
 	m := &model.Model{
-		Path:        path,
-		Format:      model.FormatSafeTensors,
-		Version:     "v1",
-		FileSize:    st.Size(),
-		Tensors:     make([]*model.Tensor, 0, len(hdr.Tensors)),
+		Path:     path,
+		Format:   model.FormatSafeTensors,
+		Version:  "v1",
+		FileSize: st.Size(),
+		Tensors:  make([]*model.Tensor, 0, len(hdr.Tensors)),
+		// **空切片而不是 nil**：没有 __metadata__ 时 nil 会被序列化成
+		// `"metadata": null`，而 null 对严格类型的消费方是类型错误
+		//（Go 的 []MetaKV、Rust、TS 的非可选数组）。[] 才是"空的集合"。
+		Metadata:    make([]model.MetaKV, 0, len(hdr.Metadata)),
 		DataStart:   dataStart,
 		HeaderBytes: int64(headerLen),
 	}
