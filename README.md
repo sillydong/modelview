@@ -396,23 +396,10 @@ go test ./... -race
 python3 tools/check_readme.py           # 本文档与代码的名字/路径是否一致
 ```
 
-### 真实语料
-
-日常回归用的是**入库的小样本与真值**（`internal/decode/testdata/`、`internal/ref/testdata/`，
-从真实文件截取），所以 `go test` 不需要网络、不需要 Python。
-
-更完整的一组语料是**作者本机的** ollama 模型与另一个项目的 artifacts，
-**不在仓库里**，别人 clone 下来也没有——那类测试默认跳过（`go test -v` 里能看到
-跳过了多少条），设 `MODELVIEW_REAL=1` 则把「语料缺失」判为失败
-（用来确认它们真的跑过，而不是静默跳过）：
-
-```bash
-MODELVIEW_REAL=1 go test ./...
-```
-
 ### 交叉验证
 
-`tools/` 下是开发期用的验证脚本，不参与构建：
+`tools/` 下是开发期用的验证脚本，不参与构建。有些要读本地的模型文件，
+在没装对应模型的机器上跑不起来（它们的结果已经冻结进入库的 testdata，日常 `go test` 不需要它们）：
 
 | 脚本 | 用途 |
 |---|---|
@@ -422,13 +409,10 @@ MODELVIEW_REAL=1 go test ./...
 | `verify_gguf_quant_sim.py` | 量化模拟的字节级真值（含专门造出的舍入平局与全零块） |
 | `verify_ggml_types.py` | GGML 类型码表与上游逐条对照 |
 | `verify_ftype_table.py` | `general.file_type` 取值表与 llama.cpp 上游逐条对照 |
-| `verify_safetensors.py` | safetensors 的独立解析参照（只用标准库，代码路径与 Go 版完全不同） |
-| `verify_pytorch.py` | PyTorch .pt 的独立解析参照（`pickletools` 反汇编 + 自己的栈机） |
 | `extract_real_blocks.py`、`extract_metadata_keys.py`、`extract_tensor_segments.py` | 从本机模型导出测试样本，以及速查表覆盖率的真值 |
 | `compare_dequant.go`、`compare_uniform_formula.go` | 比对解码结果；复现「统一公式为什么不可信」的那组数据 |
 | `mutate.py` | 变异验证：破坏一处实现 → 确认测试变红 → 按 SHA-256 还原（自带 `mutate_test.py`） |
 | `drive_tui.py` | 在真 pty 里驱动 TUI 并逐步断言，含最小 vt100 屏幕模型（自带 `drive_tui_test.py`） |
-| `check_real_switch.sh` | 验证 `MODELVIEW_REAL=1` 真的拦得住「静默跳过」 |
 | `check_readme.py` | 核对本文档里可机械验证的名字与路径（选项名 / 仓库路径 / 扫描根 / 脚本名 / 速查表组名）与代码一致 |
 
 验证产物**入库**（`internal/decode/testdata/`、`internal/ref/testdata/`），

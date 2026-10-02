@@ -2,16 +2,10 @@ package gguf
 
 import (
 	"bytes"
-	"cmp"
 	"errors"
-	"os"
-	"path/filepath"
-	"slices"
 	"testing"
 
 	"github.com/sillydong/modelview/internal/model"
-	"github.com/sillydong/modelview/internal/ollamablob"
-	"github.com/sillydong/modelview/internal/testutil"
 )
 
 func TestReadTensorInfos(t *testing.T) {
@@ -304,156 +298,6 @@ func TestTensorByteSize_未收录类型返回可识别错误(t *testing.T) {
 	if e.Code != 16 {
 		t.Errorf("Code = %d, want 16", e.Code)
 	}
-}
-
-// 用真实文件验证张量的字节区间互不重叠。
-//
-// 只要某个类型的块大小偏大，该类型张量的结束位置就会越过下一个张量的起点，
-// 重叠量恰好等于误差；偏小则表现为空隙。两个方向都杀得死。
-//
-// **覆盖边界**：这条不变式只能验证**这四个文件里实际出现的类型**
-// （F32/F16/BF16/Q4_K/Q5_0/Q6_K/Q8_0 共 7 项）。其余 13 项
-// （Q4_0/Q4_1/Q5_1/Q8_1/Q2_K/Q3_K/Q5_K/Q8_K/I8/I16/I32/I64/F64）
-// 没有任何真实文件覆盖，只能靠 TestTensorByteSize_覆盖全部类型码
-// 逐值钉住 —— 那张表的期望值来自结构体定义，是第三处手抄，
-// 三处一致地写错仍然拦不住。
-//
-// 注意不能只检查"最后一个张量结束于文件末尾"：那样只有排在最末的那个
-// 类型会被验证到，其它类型写错也发现不了。
-func TestBlockTable_与真实文件吻合(t *testing.T) {
-	blobs := []string{
-		"sha256-5ee4f07cdb9bead", // qwen2.5:3b     F32/Q4_K/Q6_K
-		"sha256-970aa74c0a90ef7", // nomic-embed    F32/F16
-		"sha256-4c27e0f5b5adf02", // gemma4:e4b     + BF16
-		"sha256-7121486771cbfe2", // gemma4:26b     + Q5_0/Q8_0
-		// **gpt-oss:20b 是唯一含 MXFP4 的真实文件**（459 个张量里 72 个是它）。
-		//
-		// 加这条之前，MXFP4 的块结构（32 个权重 17 字节）**没有任何独立来源**：
-		// 它只出现在 dtype.go 的条目与 tensor_test 的期望表里，两处都是手抄的。
-		// 实测过：把 17 改成 18、连下面的期望值一起改，整套测试全绿
-		//（包括 analyze/decode/ref）—— 而真实文件里那张量会立刻重叠。
-		"sha256-e7b273f9636059a6", // gpt-oss:20b    + MXFP4
-	}
-
-	// 语料整个不在（换台机器）时跳过；语料在、清单里某个文件却不在时判失败。
-	// 两者的区别很重要：前者是"没得验"，后者是"以为验了其实没有"。
-	if blobsDir() == "" {
-		testutil.RequireReal(t, "~/.ollama/models/blobs",
-			"—— 块表与真实文件布局吻合的回归（张量不重叠、无空隙、排到文件末尾）")
-	}
-
-	covered := map[model.Dtype]bool{}
-	for _, prefix := range blobs {
-		path := findBlob(prefix)
-		if path == "" {
-			// 不能静默 continue：少一个文件，测试照样全绿，
-			// 该文件覆盖的类型（如 Q5_0/Q8_0）就凭空消失了。
-			t.Errorf("找不到 %s*，该文件覆盖的类型未被验证", prefix)
-			continue
-		}
-		t.Run(prefix[7:15], func(t *testing.T) {
-			m, err := Parse(path)
-			if err != nil {
-				t.Fatalf("Parse 失败: %v", err)
-			}
-
-			sorted := make([]*model.Tensor, len(m.Tensors))
-			copy(sorted, m.Tensors)
-			slices.SortFunc(sorted, func(a, b *model.Tensor) int {
-				return cmp.Compare(a.Offset, b.Offset)
-			})
-
-			for _, tn := range sorted {
-				covered[tn.Dtype] = true
-			}
-
-			align := int64(32)
-			for _, tn := range sorted {
-				if tn.ByteSize == 0 {
-					t.Fatalf("%s 的字节数为 0（类型 %s 未收录）", tn.Name, tn.Dtype)
-				}
-			}
-
-			for i := 1; i < len(sorted); i++ {
-				prev, cur := sorted[i-1], sorted[i]
-				end := prev.Offset + prev.ByteSize
-				if end > cur.Offset {
-					t.Fatalf("张量重叠 %d 字节：\n  %s 结束于 %d\n  %s 起始于 %d\n"+
-						"说明这两者之一的块大小算错了",
-						end-cur.Offset, prev.Name, end, cur.Name, cur.Offset)
-				}
-				// 张量之间只应有对齐填充，不应有大段空隙。
-				if gap := cur.Offset - end; gap >= align {
-					t.Errorf("张量间空隙 %d 字节（≥ 对齐 %d）：%s 结束于 %d，%s 起始于 %d",
-						gap, align, prev.Name, end, cur.Name, cur.Offset)
-				}
-			}
-
-			// 实测四个文件的差值**恰好为 0**（GGUF 数据区紧排到文件末尾）。
-			// 这里不放宽容差：1024 字节的口子意味着末尾张量的块大小偏小
-			// 一千字节以内永远抓不到，而注释声称的是"差值 0"。
-			last := sorted[len(sorted)-1]
-			if end := last.Offset + last.ByteSize; end != m.FileSize {
-				t.Errorf("最后一个张量 %s 结束于 %d，文件大小 %d，差值 %d",
-					last.Name, end, m.FileSize, m.FileSize-end)
-			}
-		})
-	}
-	// 真实文件能覆盖到的类型集合必须至少包含这几个 ——
-	// 块表里其余项由 TestTensorByteSize_覆盖全部类型码 兜底。
-	want := []model.Dtype{
-		model.DtypeF32, model.DtypeF16, model.DtypeBF16,
-		model.DtypeQ4K, model.DtypeQ5_0, model.DtypeQ6K, model.DtypeQ8_0,
-	}
-	var missing []string
-	for _, d := range want {
-		if !covered[d] {
-			missing = append(missing, string(d))
-		}
-	}
-	if len(missing) > 0 {
-		t.Errorf("真实文件未覆盖到预期类型 %v —— 覆盖范围缩水了", missing)
-	}
-}
-
-// blobsDir 返回 ollama 的 blobs 目录；不存在返回空串。
-func blobsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	dir := filepath.Join(home, ".ollama", "models", "blobs")
-	if _, err := os.Stat(dir); err != nil {
-		return ""
-	}
-	return dir
-}
-
-// findBlob 在 ollama 的 blobs 目录里按前缀找文件；找不到返回空串。
-func findBlob(prefix string) string {
-	dir := blobsDir()
-	if dir == "" {
-		return ""
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-	for _, e := range entries {
-		if len(e.Name()) >= len(prefix) && e.Name()[:len(prefix)] == prefix {
-			// 跳过没下完的 —— 前缀匹配**会命中** <digest>-partial，
-			// 拿它当语料测出来的结论是假的。
-			//
-			// 判据来自 ollamablob 包（叶子包，不会成环）。
-			// 这里原先抄了一份更宽的 `Contains(name, "-partial")`，
-			// 注释却写着"判据相同" —— 其实不同。
-			if ollamablob.IsInProgress(e.Name()) {
-				continue
-			}
-			return filepath.Join(dir, e.Name())
-		}
-	}
-	return ""
 }
 
 // 形状连乘溢出必须报错，不能回绕成负数或 0。

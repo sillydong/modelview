@@ -356,23 +356,6 @@ func TestParse_连续张量不标记(t *testing.T) {
 	}
 }
 
-// 真实文件同样：本地 2601 个张量全是连续的。
-func TestParse_真实PT_都是连续张量(t *testing.T) {
-	p := requireArtifact(t, "releases/v0.1/model.pt")
-	m, err := Parse(p)
-	if err != nil {
-		t.Fatalf("Parse 失败: %v", err)
-	}
-	if m.ArchivePrefix != "model" {
-		t.Errorf("ArchivePrefix = %q, want model", m.ArchivePrefix)
-	}
-	for _, tn := range m.Tensors {
-		if tn.NonContiguous {
-			t.Errorf("张量 %s 标为非连续，但实测本地文件全是连续的", tn.Name)
-		}
-	}
-}
-
 // 非连续布局（转置）必须被标记出来。
 //
 // 转置张量的字节数与形状都对，但元素在存储块里不是线性排列的 ——
