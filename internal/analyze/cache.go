@@ -38,8 +38,7 @@ const schemaVersion = 4
 
 // cacheDirName 是放在模型文件旁边的缓存目录名。
 //
-// **带前导点**，与 .gitignore 的规则和设计文档 spec §6.3 一致 ——
-// 模型文件常常放在 git 仓库里（本项目自己的 artifacts 就是），
+// **带前导点**：模型文件常常就放在 git 仓库里，
 // 目录名不带点会让缓存出现在 git status 里。
 const cacheDirName = ".modelview-cache"
 
@@ -97,8 +96,8 @@ func (c *cache) primaryPath() string {
 
 // fallbackPath 是退路：<用户缓存目录>/modelview/<绝对路径的 sha256>.json。
 //
-// 用路径哈希而不是文件名：实测 artifacts 里有 37 份都叫
-// mutation.safetensors 的文件，内容两两不同，按名字存会互相覆盖。
+// 用路径哈希而不是文件名：实测有一批模型文件都叫同一个名字
+// （同名副本散在不同目录下），内容两两不同，按名字存会互相覆盖。
 func (c *cache) fallbackPath() string {
 	base, err := os.UserCacheDir()
 	if err != nil {
