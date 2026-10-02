@@ -62,7 +62,19 @@ func quantSimLine(target, bits string, s model.QuantSim) string {
 	// 用 "bit/权重" 而不是 "B/权重"：B 在这个输出里已经是**字节**
 	// （同一行就有 243.43 MiB），且"类型分布"段用的就是 bit/权重。
 	// 位宽交给 BitsPerWeight —— 它不能走 %.4g（6.5625 会被抹成 6.562）
-	return fmt.Sprintf("%s %s bit/权重 %.1fdB ×%.2f", target, bits, s.SNRDB, s.Compression)
+	line := fmt.Sprintf("%s %s bit/权重 %.1fdB ×%.2f", target, bits, s.SNRDB, s.Compression)
+
+	// **被排除的非有限值必须显示**：它们不参与任何误差量，所以一个
+	// 含 NaN 的张量与一个干净张量在界面上长得一模一样（dB 与压缩比
+	// 都是正常数字）。与 render.Stats 里那句 ⚠NaN=/Inf= 是同一个理由
+	//（那里的注释写着"看起来跟真正的零张量一模一样"）。
+	//
+	// 措辞刻意短：这一行本来就有三档并排，80 列终端下 TUI 的
+	// truncateLines 从右边切，多一个字都可能把末尾切掉。
+	if s.NonFinite > 0 {
+		line += fmt.Sprintf(" ⚠%s 个值非有限", humanize.Count(s.NonFinite))
+	}
+	return line
 }
 
 // QuantSimLines 把若干档模拟排成列对齐的多行（TUI 详情页用）。
@@ -131,7 +143,8 @@ func QuantExisting(q *model.QuantInfo) string {
 // 零值会打出一条看着像事实的诊断（"0 bit/权重 0 子块"、"最扁 #0（比值 0）"）
 // —— TUI 手写 fixture 时漏填字段就是这个下场。
 //
-// 最多 3 行：方案/位宽/子块数、scale 范围与中位、两个警告。
+// 最多 4 行：方案/位宽/子块数、scale 范围与中位、非有限值说明（有才出）、
+// 两个警告（有才出）。
 func QuantExistingLines(q *model.QuantInfo) []string {
 	if q == nil {
 		return nil
@@ -151,6 +164,17 @@ func QuantExistingLines(q *model.QuantInfo) []string {
 			q.Scheme, BitsPerWeight(q.BitsPerWeight), humanize.Count(q.SubBlocks)),
 		fmt.Sprintf("scale[%s, %s] 中位 %s",
 			humanize.Float(q.ScaleMin), humanize.Float(q.ScaleMax), median),
+	}
+	// **非有限的子块必须说明**：它们被排除在统计之外，所以上面那行
+	// scale 范围看着正常（或全零），一个 scale 全是 NaN 的张量与一个
+	// 真正的全零张量在界面上长得一模一样。与 render.Stats 里那句
+	// ⚠NaN=/Inf= 是同一个理由。
+	//
+	// 单独一行而不是挤进下面那条 warn：那一行已经可能同时有
+	// "⚠压平 N 子块"与"最扁 #N（比值 x）"，再加一段会顶破 80 列的预算。
+	if q.NonFiniteScales > 0 {
+		lines = append(lines, fmt.Sprintf("⚠%s 个子块 scale 非有限，已排除在统计外",
+			humanize.Count(q.NonFiniteScales)))
 	}
 	// 被压平的**子块**数是最直接的证据，必须显示。
 	// 单位必须写"子块"而不是"块"：同一行前面刚写过"N 子块"，

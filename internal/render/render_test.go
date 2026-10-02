@@ -399,3 +399,54 @@ func TestTensorQuant_整串精确(t *testing.T) {
 		t.Errorf("两者皆无时应是空串，实际 %q", got)
 	}
 }
+
+// 被排除的非有限值必须显示出来。
+//
+// 它们不参与任何统计量，所以一个全是 NaN scale 的张量与一个真正全零的
+// 张量在界面上长得**一模一样**（scale[0, 0]、最扁比值 0）——
+// 不说明的话用户会把"读不出来"当成"压得很平"。render.Stats 对 NaN/Inf
+// 早有这个处理，量化诊断这两条出口原来漏了。
+func TestQuantExistingLines_非有限子块要显示(t *testing.T) {
+	base := model.QuantInfo{
+		Scheme: "Q4_K", BitsPerWeight: 4.5,
+		SubBlocks: 64, BlockElems: 32,
+		ScaleMin: 0, ScaleMax: 0, ScaleMedian: 0,
+		FlattestRatio: 0, FlattestIndex: 0,
+	}
+
+	clean := QuantExistingLines(&base)
+	joined := strings.Join(clean, "\n")
+	if strings.Contains(joined, "非有限") {
+		t.Errorf("没有非有限值时不该出现这句:\n%s", joined)
+	}
+
+	dirty := base
+	dirty.NonFiniteScales = 64
+	got := strings.Join(QuantExistingLines(&dirty), "\n")
+	if !strings.Contains(got, "非有限") {
+		t.Errorf("整块 scale 非有限却没说 —— 界面上与全零张量分不开:\n%s", got)
+	}
+	// 数量必须打出来：1 个和 64 个是两回事
+	if !strings.Contains(got, "64") {
+		t.Errorf("没打出非有限的子块数:\n%s", got)
+	}
+}
+
+// 模拟那边同理：误差量都在有限值上算，不说明的话 dB 是个正常数字。
+func TestQuantSimLines_非有限值要显示(t *testing.T) {
+	base := model.QuantSim{Target: "Q8_0", BitsPerWeight: 8.5, SNRDB: 45.6, Compression: 3.76}
+
+	if got := strings.Join(QuantSimLines([]model.QuantSim{base}), "\n"); strings.Contains(got, "非有限") {
+		t.Errorf("没有非有限值时不该出现这句:\n%s", got)
+	}
+
+	dirty := base
+	dirty.NonFinite = 2048
+	got := strings.Join(QuantSimLines([]model.QuantSim{dirty}), "\n")
+	if !strings.Contains(got, "非有限") {
+		t.Errorf("有被排除的值却没说:\n%s", got)
+	}
+	if !strings.Contains(got, "2.048 K") {
+		t.Errorf("没打出被排除的个数:\n%s", got)
+	}
+}
