@@ -103,6 +103,9 @@ func (v ModelView) Init() tea.Cmd {
 	}
 }
 
+// Modal 恒为 false：模型概览不输入文字，q 与 Esc 照旧归根视图。
+func (v ModelView) Modal() bool { return false }
+
 func (v ModelView) Update(msg tea.Msg) (View, tea.Cmd) {
 	switch msg := msg.(type) {
 	case modelLoadedMsg:

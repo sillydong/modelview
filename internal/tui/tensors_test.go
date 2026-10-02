@@ -240,47 +240,6 @@ func TestTensorsView_过滤态是模态的(t *testing.T) {
 	}
 }
 
-// **连续两次按键之后仍是模态的** —— 第二下才暴露的那类丢失。
-//
-// 根视图把 Update 的返回值写回栈顶（app.go 的 forward），
-// 所以任何一条分支返回了不带 Modal() 的具体类型，
-// 模态性都会在第一下按键之后静默消失：第一下进过滤正常，
-// 第二下敲 q 就退出程序。只测一次按键看不出这个。
-func TestApp_模态性经过Update仍在(t *testing.T) {
-	root := New(fakeView{title: "根"})
-	pushed, _ := root.Update(pushMsg{v: newTensors(fakeModelWithTensors(5))})
-	m := pushed.(Model)
-
-	// 第一下 `/` 走的是根视图末尾的兜底 forward（此时还不是模态的），
-	// 第二下 `q` 只能走模态分支 —— 换了指针接收者、或 Update 某条分支
-	// 返回了别的具体类型，这一下就会被根视图当成全局的"退出"。
-	for i, k := range []string{"/", "q"} {
-		next, cmd := m.Update(key(k))
-		if cmd != nil {
-			if _, isQuit := cmd().(tea.QuitMsg); isQuit {
-				t.Fatalf("第 %d 下按键（%q）触发了退出 —— 模态性在第一下之后丢了", i+1, k)
-			}
-		}
-		m = next.(Model)
-	}
-
-	top := m.stack[len(m.stack)-1]
-	mv, ok := top.(modalView)
-	if !ok {
-		t.Fatalf("栈顶是 %T，不再实现 modalView —— 模态性丢了", top)
-	}
-	if !mv.Modal() {
-		t.Error("栈顶不再声明模态 —— 此时敲 q 会退出程序")
-	}
-	tv, ok := top.(TensorsView)
-	if !ok {
-		t.Fatalf("栈顶是 %T，want TensorsView —— Update 返回了别的具体类型", top)
-	}
-	if tv.filter != "q" {
-		t.Errorf("过滤词 = %q, want q —— q 没被视图收下", tv.filter)
-	}
-}
-
 // 输入态退格删一个字；删空之后过滤态仍在（还在输入）。
 func TestTensorsView_输入态退格(t *testing.T) {
 	v := newTensors(fakeModelWithTensors(5))

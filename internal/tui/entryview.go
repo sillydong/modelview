@@ -72,6 +72,9 @@ func (v EntryView) Title() string { return "速查表 · " + v.e.Title }
 
 func (v EntryView) Init() tea.Cmd { return nil }
 
+// Modal 恒为 false：速查表条目是只读的，q 与 Esc 照旧归根视图。
+func (v EntryView) Modal() bool { return false }
+
 func (v EntryView) Update(msg tea.Msg) (View, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {

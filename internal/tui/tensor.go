@@ -120,6 +120,9 @@ func (v TensorView) Init() tea.Cmd {
 	return tea.Batch(v.scanCmd(), v.tick())
 }
 
+// Modal 恒为 false：张量详情没有输入框，q 与 Esc 照旧归根视图。
+func (v TensorView) Modal() bool { return false }
+
 // scanCmd 在 goroutine 里扫一份**副本**，结果通过消息回到主线程。
 //
 // **必须扫副本**：analyze.One 会就地写 tn.Stats/Quant/QuantSims，

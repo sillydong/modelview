@@ -25,6 +25,9 @@ func (f fakeView) View(w, h int) string           { return f.title }
 func (f fakeView) Help() []string                 { return nil }
 func (f fakeView) Title() string                  { return f.title }
 
+// Modal 恒为 false —— 要模态行为的测试用 modalFakeView，它才带开关。
+func (f fakeView) Modal() bool { return false }
+
 // key 造一个按键消息，省得每个测试都写一遍。
 func key(s string) tea.KeyMsg {
 	switch s {
@@ -169,6 +172,7 @@ func (v viewWithBody) Update(tea.Msg) (View, tea.Cmd) { return v, nil }
 func (v viewWithBody) View(w, h int) string           { return v.body }
 func (v viewWithBody) Help() []string                 { return nil }
 func (v viewWithBody) Title() string                  { return "长内容" }
+func (v viewWithBody) Modal() bool                    { return false }
 
 // **内容超宽必须被截掉，不能留给终端折行。**
 //
@@ -190,8 +194,8 @@ func TestApp_内容超宽被截断(t *testing.T) {
 
 // 标题与帮助栏超宽同样要截 —— 它们是另外两处调用点。
 func TestApp_标题与帮助栏超宽被截断(t *testing.T) {
-	// 用有超长标题与超长帮助栏的视图：栈顶没有 Title() 时会退回默认标题，
-	// 那样这一格就测不到标题那一处截断
+	// 用有超长标题与超长帮助栏的视图：标题那一格必须真的超长，
+	// 否则测不到标题那一处截断
 	m, _ := New(longTitleView{}).Update(tea.WindowSizeMsg{Width: 20, Height: 6})
 	for i, l := range strings.Split(m.(Model).View(), "\n") {
 		if w := lipgloss.Width(l); w > 20 {
@@ -209,6 +213,7 @@ func (longTitleView) Help() []string {
 	return []string{strings.Repeat("很长的帮助文本", 10)}
 }
 func (longTitleView) Title() string { return strings.Repeat("超长标题", 20) }
+func (longTitleView) Modal() bool   { return false }
 
 // **Init 必须真的被调用** —— 忘了接上的表现是"界面永远停在初始状态"，
 // 而所有直接调 Update 的单元测试都是绿的。
@@ -259,6 +264,8 @@ func (v initTrackingView) Init() tea.Cmd {
 func (v initTrackingView) Update(tea.Msg) (View, tea.Cmd) { return v, nil }
 func (v initTrackingView) View(w, h int) string           { return "跟踪" }
 func (v initTrackingView) Help() []string                 { return nil }
+func (v initTrackingView) Title() string                  { return "跟踪" }
+func (v initTrackingView) Modal() bool                    { return false }
 
 // modalFakeView 是一个会声明自己"现在要独占按键"的视图。
 //
@@ -380,6 +387,81 @@ func TestApp_只看栈顶的模态性(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Error("q 返回的不是退出命令")
+	}
+}
+
+// **连续两次按键之后仍是模态的** —— 第二下才暴露的那类丢失。
+//
+// 根视图把 Update 的返回值写回栈顶（app.go 的 forward），所以任何一条
+// 分支返回了别的具体类型（或返回一个输入态已经为假的副本），模态性都会
+// 在第一下按键之后静默消失：第一下进输入态正常，第二下敲 q 就退出程序。
+// 只测一次按键看不出这个。
+//
+// **两个模态视图各走一格**：`Modal()` 是各视图自己实现的判据
+// （TensorsView.filtering / RefView.searching），合进 View 只堵住了
+// "忘了实现"与"接收者写成指针"，堵不住"Update 把状态改回去"。
+// 只守一个的话，另一个丢模态的表现同样是"在输入框里敲 q 退出程序"，
+// 而没有任何测试会红。
+func TestApp_模态性经过Update仍在(t *testing.T) {
+	cases := []struct {
+		name string
+		view View
+		// 两个视图把输入的词记在各自字段上，断言只能是闭包 ——
+		// 硬抽一层公共抽象的话，抽出来的东西比它替掉的两行还长
+		check func(t *testing.T, top View)
+	}{
+		{
+			name: "TensorsView",
+			view: newTensors(fakeModelWithTensors(5)),
+			check: func(t *testing.T, top View) {
+				tv, ok := top.(TensorsView)
+				if !ok {
+					t.Fatalf("栈顶是 %T，want TensorsView —— Update 返回了别的具体类型", top)
+				}
+				if tv.filter != "q" {
+					t.Errorf("过滤词 = %q, want q —— q 没被视图收下", tv.filter)
+				}
+			},
+		},
+		{
+			name: "RefView",
+			view: NewRefView(nil),
+			check: func(t *testing.T, top View) {
+				rv, ok := top.(RefView)
+				if !ok {
+					t.Fatalf("栈顶是 %T，want RefView —— Update 返回了别的具体类型", top)
+				}
+				if rv.search != "q" {
+					t.Errorf("搜索词 = %q, want q —— q 没被视图收下", rv.search)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := New(fakeView{title: "根"})
+			pushed, _ := root.Update(pushMsg{v: tc.view})
+			m := pushed.(Model)
+
+			// 第一下 `/` 走的是根视图末尾的兜底 forward（此时还不是模态的），
+			// 第二下 `q` 只能走模态分支 —— Update 某条分支返回了别的具体类型的话，
+			// 这一下就会被根视图当成全局的"退出"。
+			for i, k := range []string{"/", "q"} {
+				next, cmd := m.Update(key(k))
+				if cmd != nil {
+					if _, isQuit := cmd().(tea.QuitMsg); isQuit {
+						t.Fatalf("第 %d 下按键（%q）触发了退出 —— 模态性在第一下之后丢了", i+1, k)
+					}
+				}
+				m = next.(Model)
+			}
+
+			top := m.stack[len(m.stack)-1]
+			tc.check(t, top)
+			if !top.Modal() {
+				t.Error("栈顶不再声明模态 —— 此时敲 q 会退出程序")
+			}
+		})
 	}
 }
 

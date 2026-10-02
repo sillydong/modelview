@@ -72,6 +72,9 @@ func (l Library) Init() tea.Cmd {
 	}
 }
 
+// Modal 恒为 false：模型库没有输入框，q 与 Esc 照旧归根视图。
+func (l Library) Modal() bool { return false }
+
 func (l Library) Update(msg tea.Msg) (View, tea.Cmd) {
 	switch msg := msg.(type) {
 	case libraryLoadedMsg:

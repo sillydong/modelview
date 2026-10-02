@@ -95,10 +95,11 @@ func (v TensorsView) Init() tea.Cmd { return nil }
 // Modal 让根视图把按键全部交给本视图 —— 只在**正在输入**过滤词的时候。
 //
 // **接收者必须是值，不能是指针**（`func (v *TensorsView) Modal() bool`）：
-// 视图以值入栈（`pushCmd(NewTensorsView(m))`），指针接收者会让
-// `m.stack[i].(modalView)` 断言失败 → 静默变成非模态 →
-// 用户在过滤框里敲 q 直接退出程序，而所有单元测试全绿
-// （它们直接调 Update，绕过了根 Model）。Task 2 的探针实测过这条。
+// 视图以值入栈（`pushCmd(NewTensorsView(m))`），指针接收者会让 TensorsView
+// 不再实现 View —— pushCmd 那行直接编不过。加固之前这条路是**静默**的：
+// 断言失败 → 非模态 → 用户在过滤框里敲 q 直接退出程序，
+// 而所有单元测试全绿（它们直接调 Update，绕过了根 Model）。
+// Task 2 的探针实测过这条。
 //
 // **已确认的过滤态（`filter != "" && !filtering`）刻意「不是」模态的**：
 // 那样 q 才能退出程序。代价是清过滤词不能用 Esc（那会被根视图
