@@ -10,6 +10,7 @@ import (
 
 	"github.com/sillydong/modelview/internal/discover"
 	"github.com/sillydong/modelview/internal/model"
+	"github.com/sillydong/modelview/internal/testutil"
 )
 
 // 模型库每行的渲染：有格式信息与没有时都要正确。
@@ -131,7 +132,7 @@ func TestRunScan_没有模型时也要提未完成的下载(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("HOME", home)
+	testutil.SetHome(t, home)
 
 	out := captureStdout(t, func() {
 		if err := runScan(context.Background(), false); err != nil {

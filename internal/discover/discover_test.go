@@ -187,14 +187,19 @@ func TestPaths_形状正确(t *testing.T) {
 
 // expandHome 只展开开头的 ~/，中间的 ~ 是文件名的一部分。
 func TestExpandHome(t *testing.T) {
+	// **期望值用 filepath.Join 拼，不写死 "/h/models"**：这个函数内部
+	// 用的就是 filepath.Join，在 Windows 上它会给出反斜杠，而写死的
+	// 正斜杠期望会让这条测试在那边必红（实测：CI 的 windows runner）。
+	// 这里要验的是"~ 换成了 home、其余原样接上"，不是分隔符长什么样。
+	home := filepath.FromSlash("/h")
 	tests := []struct {
 		in, home, want string
 	}{
-		{"~/models", "/h", "/h/models"},
-		{"~", "/h", "/h"},
-		{"/abs/path", "/h", "/abs/path"},
-		{"~/a~b/c", "/h", "/h/a~b/c"}, // 中间的 ~ 不动
-		{"~/x", "", "~/x"},            // 拿不到 home 时原样返回
+		{"~/models", home, filepath.Join(home, "models")},
+		{"~", home, home},
+		{"/abs/path", home, "/abs/path"},
+		{"~/a~b/c", home, filepath.Join(home, "a~b/c")}, // 中间的 ~ 不动
+		{"~/x", "", "~/x"},                              // 拿不到 home 时原样返回
 	}
 	for _, tt := range tests {
 		if got := expandHome(tt.in, tt.home); got != tt.want {

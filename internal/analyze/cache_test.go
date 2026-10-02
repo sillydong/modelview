@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sillydong/modelview/internal/model"
+	"github.com/sillydong/modelview/internal/testutil"
 )
 
 // modelFile 造一个假的模型文件（缓存只关心它的大小与 mtime）。
@@ -293,8 +294,25 @@ func TestCache_主目录不可写时回退(t *testing.T) {
 		os.Chmod(cacheDir, 0o755)
 	})
 
+	// **chmod 不一定真的拦住写入**，那就造不出这条测试要的前提。
+	// 两种情况实测都遇到过：Windows 上对目录 chmod 基本无效
+	//（CI 的 windows runner 上这条测试红了），以及以 root 跑时
+	// 权限位根本拦不住（容器里常见）。
+	//
+	// 这里用**实际写一次**来判断，而不是看 runtime.GOOS 或 euid：
+	// 前者漏掉"Windows 上以管理员跑"之类，后者在 Windows 上不好判。
+	// 探针写不进去 → 前提成立，继续；写得进去 → 跳过并说清楚为什么。
+	if f, err := os.CreateTemp(cacheDir, "probe-*"); err == nil {
+		//nolint:errcheck // 探测文件的清理，失败不影响结论
+		f.Close()
+		//nolint:errcheck // 同上
+		os.Remove(f.Name())
+		t.Skip("chmod 555 之后目录仍可写（Windows 的目录权限不拦写；" +
+			"以 root 跑时同样）—— 造不出「不可写」这个前提")
+	}
+
 	// HOME 指向临时目录，避免污染真实的用户缓存目录
-	t.Setenv("HOME", t.TempDir())
+	testutil.SetHome(t, t.TempDir())
 
 	c := newCache(p, false)
 	got := c.path()
