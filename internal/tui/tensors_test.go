@@ -276,42 +276,6 @@ func TestTensorsView_输入态退格(t *testing.T) {
 	}
 }
 
-// **已确认的过滤态也要能删字** —— 否则清掉过滤词只有
-// "按 / 回输入态再删"这一条路，而屏幕上没有任何地方说这件事。
-// 表头那句 `（Backspace 删字，Esc 返回）` 就是照着这条行为写的，
-// 两者必须一起成立：先有这条行为，表头才不是假话。
-func TestTensorsView_已确认过滤态退格(t *testing.T) {
-	v := newTensors(fakeModelWithTensors(5))
-	v2, _ := v.Update(key("/"))
-	v = v2.(TensorsView)
-	for _, r := range "attn" {
-		v3, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		v = v3.(TensorsView)
-	}
-	// Enter 确认：退出输入态，但保留过滤词
-	v2, _ = v.Update(key("enter"))
-	v = v2.(TensorsView)
-	if v.filtering || v.filter != "attn" {
-		t.Fatalf("确认后 filtering=%v filter=%q, want false/attn", v.filtering, v.filter)
-	}
-
-	// **确认态下 Esc 不该清词**（它会被根视图拦成"返回上一层"），
-	// 所以表头不能再写"Esc 取消" —— 这条断言守的是那个决定
-	out := v.View(120, 20)
-	if !strings.Contains(out, "Backspace") {
-		t.Errorf("已确认过滤态的表头没提 Backspace —— 用户不知道该怎么清字:\n%s", out)
-	}
-
-	v2, _ = v.Update(key("backspace"))
-	v = v2.(TensorsView)
-	if v.filter != "att" {
-		t.Errorf("已确认态退格后过滤词是 %q, want att", v.filter)
-	}
-	if v.filtering {
-		t.Error("已确认态退格不该把视图切回输入态")
-	}
-}
-
 // Enter 推入张量详情（走 pushMsg），且带的是**当前选中**的那个张量。
 func TestTensorsView_Enter进入详情(t *testing.T) {
 	v := newTensors(fakeModelWithTensors(10))
@@ -495,19 +459,5 @@ func TestTensorsView_输入中文后过滤词完整(t *testing.T) {
 	if v.filter != "中" {
 		t.Fatalf("敲完汉字后 filter = %q（% x），want %q —— 输入路径也要按字符",
 			v.filter, v.filter, "中")
-	}
-}
-
-// 已确认过滤态下那条 backspace 走的是另一个分支，同样要按字符删。
-func TestTensorsView_已确认过滤态退格也删一个字符(t *testing.T) {
-	m := &model.Model{
-		Path:    "x.gguf",
-		Tensors: []*model.Tensor{{Name: "中文权重", Dtype: model.DtypeF32}},
-	}
-	v := NewTensorsViewName(m, "中文")
-	v2, _ := v.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-	v = v2.(TensorsView)
-	if v.filter != "中" {
-		t.Errorf("退格后 filter = %q（% x），want %q", v.filter, v.filter, "中")
 	}
 }

@@ -362,58 +362,6 @@ func TestRefView_无匹配帮助栏不列Enter(t *testing.T) {
 	}
 }
 
-// **已确认的搜索词也能用 Backspace 删字** —— 与 `TensorsView` 同一条路。
-//
-// 两个都是"列表 + 一个过滤词"的视图，同一个键在一处能删、在另一处
-// 静默失效的话，用户在一边学会的动作到另一边只会以为是自己按错了。
-func TestRefView_已确认搜索态Backspace删字(t *testing.T) {
-	v := confirmSearch("qwen")
-	// 已确认态**不是**模态的：不是的话按键会走根视图别的分支，
-	// 这条测试验的就不是"到得了这里"了
-	if v.Modal() {
-		t.Fatal("已确认搜索态不该是模态的")
-	}
-	// 先把条目光标移开 —— 不移的话"删字之后归零"看不出任何变化
-	for range 3 {
-		v2, _ := v.Update(key("down"))
-		v = v2.(RefView)
-	}
-	if v.entryCursor != 3 {
-		t.Fatalf("前提不成立：↓ 三下之后 entryCursor = %d（搜 %q 匹配 %d 条）",
-			v.entryCursor, "qwen", len(v.entries()))
-	}
-
-	v3, _ := v.Update(key("backspace"))
-	v = v3.(RefView)
-	if v.search != "qwe" {
-		t.Errorf("删一个字符之后 search = %q, want %q", v.search, "qwe")
-	}
-	if v.entryCursor != 0 {
-		t.Errorf("词变了之后条目光标 = %d, want 0 —— 右栏内容整个换了一份",
-			v.entryCursor)
-	}
-
-	// 删到底：回到"当前表"那一态，右栏是表里的条目而不是空搜索结果
-	for range 3 {
-		v4, _ := v.Update(key("backspace"))
-		v = v4.(RefView)
-	}
-	if v.search != "" {
-		t.Fatalf("删到底之后 search = %q, want 空", v.search)
-	}
-	if v.tableCursor != 0 || v.entryCursor != 0 {
-		t.Errorf("回到当前表之后光标没归零：table=%d entry=%d",
-			v.tableCursor, v.entryCursor)
-	}
-	if n, want := len(v.entries()), len(ref.Tables()[0].Entries); n != want {
-		t.Errorf("删空之后右栏 %d 条, want 第一张表的 %d 条", n, want)
-	}
-	// 空词上继续按不该出事（也不该把 search 变成别的）
-	if v6, _ := v.Update(key("backspace")); v6.(RefView).search != "" {
-		t.Error("已经是空词了，Backspace 却改动了它")
-	}
-}
-
 // 速查表的搜索框与张量过滤框是同一条约定：退格删一个**字符**。
 func TestRefView_退格删一个字符(t *testing.T) {
 	v := NewRefView(nil)

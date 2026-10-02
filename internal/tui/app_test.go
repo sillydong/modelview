@@ -1079,3 +1079,84 @@ func TestApp_库填充结果不被栈顶吃掉(t *testing.T) {
 		t.Errorf("条目没被填充：%+v", got.items[0])
 	}
 }
+
+// 非输入态下 Backspace 与 Esc 同义（spec §3 的按键表）。
+//
+// 原来 7 种状态下 Backspace 都不返回：库/概览/无过滤的列表/详情页
+// 完全无反应；有过滤词时删掉过滤词的最后一个字符 —— 用户想退回去
+// 却改了过滤条件。
+func TestApp_非输入态退格等于返回(t *testing.T) {
+	m := New(fakeView{title: "根"})
+	m2, _ := m.Update(pushMsg{v: fakeView{title: "第二层"}})
+	if len(m2.(Model).stack) != 2 {
+		t.Fatal("压栈失败")
+	}
+
+	m3, _ := m2.(Model).Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if n := len(m3.(Model).stack); n != 1 {
+		t.Errorf("退格没有返回上一层，栈深 = %d, want 1", n)
+	}
+}
+
+// 根视图的退格与根视图的 Esc 一样，不退出程序也不崩。
+func TestApp_根视图退格无动作(t *testing.T) {
+	m := New(fakeView{title: "根"})
+	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if cmd != nil {
+		if _, quit := cmd().(tea.QuitMsg); quit {
+			t.Error("根视图按退格不该退出程序")
+		}
+	}
+	if n := len(m2.(Model).stack); n != 1 {
+		t.Errorf("栈深 = %d, want 1", n)
+	}
+}
+
+// **输入态下退格仍然是删字**，不能被全局那条抢走。
+//
+// 这是这条改动最容易做错的地方：把 backspace 提到模态判定之前的话，
+// 过滤框里的退格会变成"返回上一层" —— 而用户正在打字。
+func TestApp_输入态退格仍归输入框(t *testing.T) {
+	m := New(fakeView{title: "根"})
+	m2, _ := m.Update(pushMsg{v: NewTensorsView(&model.Model{
+		Path:    "x",
+		Tensors: []*model.Tensor{{Name: "abc", Dtype: model.DtypeF32}},
+	})})
+	tv := m2.(Model).stack[1].(TensorsView)
+	tv2, _ := tv.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	tv2, _ = tv2.(TensorsView).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ab")})
+	if tv2.(TensorsView).filter != "ab" {
+		t.Fatalf("filter = %q, want ab", tv2.(TensorsView).filter)
+	}
+	// 经根视图发退格：视图在输入态（Modal），应当被它自己吃掉
+	m3 := m2.(Model)
+	m3.stack[1] = tv2
+	m4, _ := m3.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+
+	if n := len(m4.(Model).stack); n != 2 {
+		t.Fatalf("输入态下退格把视图弹掉了，栈深 = %d, want 2", n)
+	}
+	got := m4.(Model).stack[1].(TensorsView)
+	if got.filter != "a" {
+		t.Errorf("filter = %q, want %q —— 输入态的退格应当删字", got.filter, "a")
+	}
+}
+
+// 用**真的 ModelView**（不是 fakeView）走一遍：退格要能从模型页回到库。
+//
+// 上一条用的是 fakeView，走不到 ModelView 的按键分支 —— 如果 ModelView
+// 自己吃掉了 backspace，那条测试照样绿。
+func TestApp_退格从真的模型页返回库(t *testing.T) {
+	lib := NewLibrary()
+	var m tea.Model = New(lib)
+
+	m, _ = m.Update(pushMsg{v: NewModelView(fakeModel())})
+	if n := len(m.(Model).stack); n != 2 {
+		t.Fatalf("栈深 = %d, want 2", n)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if n := len(m.(Model).stack); n != 1 {
+		t.Errorf("退格没有从模型页返回库，栈深 = %d —— ModelView 自己吃掉了它？", n)
+	}
+}
