@@ -35,6 +35,12 @@ jobs:
           if [ -n "$out" ]; then
             echo "这些文件没格式化："
             echo "$out"
+            # 顺带报出首个文件的行尾：这条检查最常见的一种失败不是"真的没格式化"，
+            # 而是**检出时被转成了 CRLF**（Windows runner 的 git 默认如此）——
+            # 那时 gofmt 会把每个 .go 都判为未格式化，而日志里只有一长串文件名，
+            # 看不出是行尾问题。行尾策略在 .gitattributes 里，这里只是让它可见。
+            f=$(echo "$out" | head -1)
+            echo "首个文件 [$f] 的 CR 字节数：$(tr -cd '\r' < "$f" | wc -c)"
             exit 1
           fi
       # **刻意不设 MODELVIEW_REAL**：CI 上没有作者本机的真实语料，

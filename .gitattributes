@@ -1,0 +1,21 @@
+# 行尾统一成 LF，**检出时也不转换**。
+#
+# 起因是 CI：Windows runner 的 git 默认 core.autocrlf=true，clone 出来的
+# .go 全是 CRLF，而 gofmt 认为 CRLF 就是「没格式化」—— 于是
+# `gofmt -l .` 列出全部文件、CI 在 Windows 上必红，而 macOS/Linux 一切正常。
+# 本地实测过这个机制：把一个 .go 转成 CRLF，gofmt -l 立刻把它列出来。
+#
+# 写死 eol=lf 而不是 `* text=auto`：Go 源码、脚本、Markdown 本来就该是 LF，
+# 明确写出来比让 git 猜更不容易出意外（auto 会根据内容猜，猜错了要在
+# Windows 上才会暴露）。入库的 testdata JSON 同理。
+*.go    text eol=lf
+*.py    text eol=lf
+*.sh    text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.mod   text eol=lf
+*.sum   text eol=lf
+*.txt   text eol=lf
+LICENSE text eol=lf
