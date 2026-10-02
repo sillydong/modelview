@@ -58,7 +58,22 @@ jobs:
           OS_NAME: ${{ matrix.os }}
         run: |
           set -o pipefail
-          go test ./... 2>&1 | tee "test-${OS_NAME}.log"
+          if go test ./... 2>&1 | tee "test-${OS_NAME}.log"; then
+            exit 0
+          fi
+          # 失败时把关键行同时写进 job summary 与 annotation：
+          # 这两处不需要 actions scope 就能读（产物要），而且失败原因
+          # 直接显示在 commit / PR 页面上，不用点进日志翻。
+          {
+            echo "## go test 失败（${OS_NAME}）"
+            echo '```'
+            grep -E '^(--- )?FAIL|^\s+--- FAIL|\.go:[0-9]+:' "test-${OS_NAME}.log" | head -30
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          grep -E '^\s*--- FAIL' "test-${OS_NAME}.log" | head -20 | while read -r line; do
+            echo "::error::${OS_NAME}${line}"
+          done
+          exit 1
       - name: 上传测试输出
         if: always()
         uses: actions/upload-artifact@v4
