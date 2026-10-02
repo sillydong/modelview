@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -410,5 +411,25 @@ func TestRefView_已确认搜索态Backspace删字(t *testing.T) {
 	// 空词上继续按不该出事（也不该把 search 变成别的）
 	if v6, _ := v.Update(key("backspace")); v6.(RefView).search != "" {
 		t.Error("已经是空词了，Backspace 却改动了它")
+	}
+}
+
+// 速查表的搜索框与张量过滤框是同一条约定：退格删一个**字符**。
+func TestRefView_退格删一个字符(t *testing.T) {
+	v := NewRefView(nil)
+	v2, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	v = v2.(RefView)
+	v2, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("中")})
+	v = v2.(RefView)
+	if v.search != "中" {
+		t.Fatalf("search = %q, want %q", v.search, "中")
+	}
+	v2, _ = v.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	v = v2.(RefView)
+	if v.search != "" {
+		t.Errorf("退格后 search = %q（% x），want 空串", v.search, v.search)
+	}
+	if !utf8.ValidString(v.search) {
+		t.Errorf("退格切出了非法 UTF-8: % x", v.search)
 	}
 }

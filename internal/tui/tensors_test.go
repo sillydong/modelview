@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -446,5 +447,67 @@ func TestTensorsView_标题用显示名而不是blob路径(t *testing.T) {
 	plain := NewTensorsView(&model.Model{Path: "/x/model.gguf", Tensors: m.Tensors}).Title()
 	if !strings.Contains(plain, "model.gguf") {
 		t.Errorf("没有显示名时应当退回文件名:\n%s", plain)
+	}
+}
+
+// 退格必须删掉**一个字符**，不是一字节。
+//
+// 与 humanize.Truncate 同一条约定：切点落在多字节字符中间会切出非法
+// UTF-8。四处 `s[:len(s)-1]`（这里两条 + reftable 两条）都漏了它，
+// 而中文模型名/张量名过滤是常见用法。
+func TestTensorsView_退格删一个字符(t *testing.T) {
+	m := &model.Model{
+		Path:    "x.gguf",
+		Tensors: []*model.Tensor{{Name: "中文权重", Dtype: model.DtypeF32}},
+	}
+	v := NewTensorsView(m)
+
+	// 进输入态并敲一个汉字
+	for _, k := range []string{"/", "中", "backspace"} {
+		var next View
+		var msg tea.Msg = tea.KeyMsg{Type: tea.KeyBackspace}
+		if k != "backspace" {
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+		}
+		next, _ = v.Update(msg)
+		v = next.(TensorsView)
+	}
+	if v.filter != "" {
+		t.Errorf("退格后 filter = %q（% x），want 空串 —— 切出半个字符了",
+			v.filter, v.filter)
+	}
+	if !utf8.ValidString(v.filter) {
+		t.Errorf("退格切出了非法 UTF-8: % x", v.filter)
+	}
+}
+
+// 上面那条的中间态单独钉一下：敲完「中」必须还是完整的那个字
+func TestTensorsView_输入中文后过滤词完整(t *testing.T) {
+	m := &model.Model{
+		Path:    "x.gguf",
+		Tensors: []*model.Tensor{{Name: "中文权重", Dtype: model.DtypeF32}},
+	}
+	v := NewTensorsView(m)
+	v2, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	v = v2.(TensorsView)
+	v2, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("中")})
+	v = v2.(TensorsView)
+	if v.filter != "中" {
+		t.Fatalf("敲完汉字后 filter = %q（% x），want %q —— 输入路径也要按字符",
+			v.filter, v.filter, "中")
+	}
+}
+
+// 已确认过滤态下那条 backspace 走的是另一个分支，同样要按字符删。
+func TestTensorsView_已确认过滤态退格也删一个字符(t *testing.T) {
+	m := &model.Model{
+		Path:    "x.gguf",
+		Tensors: []*model.Tensor{{Name: "中文权重", Dtype: model.DtypeF32}},
+	}
+	v := NewTensorsViewName(m, "中文")
+	v2, _ := v.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	v = v2.(TensorsView)
+	if v.filter != "中" {
+		t.Errorf("退格后 filter = %q（% x），want %q", v.filter, v.filter, "中")
 	}
 }

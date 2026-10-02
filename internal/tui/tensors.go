@@ -171,7 +171,7 @@ func (v TensorsView) Update(msg tea.Msg) (View, tea.Cmd) {
 			// 这里删的是**已确认的过滤词**，与输入态那条 backspace
 			// 改的是同一个字段，所以两条路的行为看着一样、用户不用分。
 			if v.filter != "" {
-				v.filter = v.filter[:len(v.filter)-1]
+				v.filter = backspaceOne(v.filter)
 				v.cursor = 0
 			}
 			// **没有非过滤态的 "esc" 分支**：过滤态才是模态的，所以
@@ -214,7 +214,7 @@ func (v TensorsView) updateFiltering(msg tea.KeyMsg) (View, tea.Cmd) {
 		return v, nil
 	case "backspace":
 		if v.filter != "" {
-			v.filter = v.filter[:len(v.filter)-1]
+			v.filter = backspaceOne(v.filter)
 			v.cursor = 0
 		}
 		return v, nil

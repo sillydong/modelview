@@ -135,7 +135,7 @@ func (v RefView) Update(msg tea.Msg) (View, tea.Cmd) {
 		// 删到空就是回到"当前表"那一态：右栏内容整个换了一份，
 		// 条目光标必须跟着归零 —— 停在旧下标上要么越界，要么静默指到另一条。
 		if v.search != "" {
-			v.search = v.search[:len(v.search)-1]
+			v.search = backspaceOne(v.search)
 			v.entryCursor = 0
 		}
 	// **没有"清搜索"的 esc 分支**：搜索态才是模态的，
@@ -201,7 +201,7 @@ func (v RefView) updateSearching(msg tea.KeyMsg) (View, tea.Cmd) {
 		v.searching, v.search, v.entryCursor = false, "", 0
 	case "backspace":
 		if v.search != "" {
-			v.search = v.search[:len(v.search)-1]
+			v.search = backspaceOne(v.search)
 			v.entryCursor = 0
 		}
 	default:
