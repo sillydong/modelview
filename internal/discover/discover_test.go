@@ -461,3 +461,31 @@ func TestItem_extra用snake_case(t *testing.T) {
 		t.Errorf("Item 的其它字段应当仍是 snake_case:\n%s", got)
 	}
 }
+
+// TotalSize 是**唯一一份**求和实现（原来有三份逐字相同的）。
+//
+// 边界要与调用方对齐：空集合返回 0，而不是任何哨兵值 ——
+// 它算的是"能回收多少磁盘"，0 就是"没有可回收的"。
+func TestTotalSize(t *testing.T) {
+	tests := []struct {
+		name  string
+		items []Item
+		want  int64
+	}{
+		{"nil", nil, 0},
+		{"空切片", []Item{}, 0},
+		{"单个", []Item{{Size: 100}}, 100},
+		{"多个", []Item{{Size: 1}, {Size: 2}, {Size: 3}}, 6},
+		// 0 与"没算出来"在 Size 里是同一个值（它由 os.Stat 填），
+		// 求和时一样处理 —— 不要在这里加哨兵
+		{"含零", []Item{{Size: 0}, {Size: 5}}, 5},
+		// 大但仍在 int64 内。**求和本身不查溢出**（与全仓其它求和一致），
+		// 所以这条只是钉住"不会因为累加方式写错而丢位"，不是防溢出。
+		{"大数", []Item{{Size: 1 << 61}, {Size: 1 << 61}}, 1 << 62},
+	}
+	for _, tt := range tests {
+		if got := TotalSize(tt.items); got != tt.want {
+			t.Errorf("%s: TotalSize = %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}

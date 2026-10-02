@@ -13,7 +13,14 @@ import (
 // 原先这里写的是"两个字符一桶"，那要 128 列 —— 与实现不符。
 //
 // 取 64 是因为 80 列下铺得满，且足够看出双峰。
-const histogramBuckets = 64
+// **导出**：渲染层要按它决定列数（tui.histogram 取
+// min(width-4, HistogramBuckets)）。原来 TUI 里硬编码了一个 64，
+// 与这里各写一份 —— 改桶数时渲染层不会报错，只会静默画出分辨率
+// 不匹配的柱子。
+const HistogramBuckets = 64
+
+// histogramBuckets 是包内用的短名字。
+const histogramBuckets = HistogramBuckets
 
 // computeStats 计算一批数值的统计量。
 //

@@ -292,7 +292,7 @@ func (v TensorView) results(width int) string {
 			"采样 %s / %s 个元素（来自样本，非全量）",
 			humanize.Count(v.tn.Stats.Count), humanize.Count(v.tn.ParamCount))))
 	}
-	if h := histogram(v.tn.Stats.Histogram, min(width-4, 64)); h != "" {
+	if h := histogram(v.tn.Stats.Histogram, min(width-4, analyze.HistogramBuckets)); h != "" {
 		fmt.Fprintf(&sb, "  %s\n", styleDim.Render(h))
 	}
 

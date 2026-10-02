@@ -55,7 +55,7 @@ func runScan(ctx context.Context, asJSON bool) error {
 	if n := len(res.InProgress); n > 0 {
 		fmt.Printf("另有 %d 个未完成的下载（合计 %s），不算可回收：\n"+
 			"  那是 ollama 正在下载或上次中断留下的，删掉会毁掉下载\n",
-			n, humanize.Bytes(totalSize(res.InProgress)))
+			n, humanize.Bytes(discover.TotalSize(res.InProgress)))
 	}
 
 	if len(res.Items) == 0 {
@@ -72,7 +72,7 @@ func runScan(ctx context.Context, asJSON bool) error {
 	fmt.Printf("发现 %d 个模型", len(res.Items))
 	if n := len(res.Orphans); n > 0 {
 		fmt.Printf("，另有 %d 个孤儿 blob 可回收 %s",
-			n, humanize.Bytes(totalSize(res.Orphans)))
+			n, humanize.Bytes(discover.TotalSize(res.Orphans)))
 	}
 	if len(res.Items) > 1 {
 		fmt.Print("（正在读取格式与参数量…）")
@@ -101,7 +101,7 @@ func runScan(ctx context.Context, asJSON bool) error {
 	// 混在模型列表里会让人以为那也是模型
 	if len(res.Orphans) > 0 {
 		fmt.Printf("\n孤儿 blob（没有被任何模型引用，可回收 %s）\n",
-			humanize.Bytes(totalSize(res.Orphans)))
+			humanize.Bytes(discover.TotalSize(res.Orphans)))
 		for _, o := range res.Orphans {
 			fmt.Println(orphanLine(o))
 		}
@@ -147,13 +147,4 @@ func scanLine(it discover.Item) string {
 // 有用信息占满了，而用户关心的是"哪个文件、多大"。
 func orphanLine(o discover.Item) string {
 	return fmt.Sprintf("  %-72s %12s", filepath.Base(o.Path), humanize.Bytes(o.Size))
-}
-
-// totalSize 返回一组条目的字节总数。
-func totalSize(items []discover.Item) int64 {
-	var n int64
-	for _, it := range items {
-		n += it.Size
-	}
-	return n
 }

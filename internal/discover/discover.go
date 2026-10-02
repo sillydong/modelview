@@ -397,3 +397,17 @@ func ScanDir(ctx context.Context, root string) ([]Item, []string) {
 	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
 	return items, nil
 }
+
+// TotalSize 返回一组条目的字节总数。
+//
+// **原来有三份逐字相同的实现**：cmd 的 totalSize、tui 的 totalBytes、
+// 以及 discover 自己测试里的一份。同一个语义写三遍，改一处漏一处不会
+// 有编译错误 —— 而它算的是"能回收多少磁盘"，正是孤儿 blob 那一段
+// 引导用户做删除决策的依据。合并到领域层，因为它问的是 discover.Item。
+func TotalSize(items []Item) int64 {
+	var n int64
+	for _, it := range items {
+		n += it.Size
+	}
+	return n
+}

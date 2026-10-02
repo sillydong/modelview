@@ -334,12 +334,12 @@ func (l Library) notices(width int) string {
 	if n := len(l.res.InProgress); n > 0 {
 		sb.WriteString(styleWarn.Render(fmt.Sprintf(
 			"未完成的下载 %d 个（合计 %s）—— 不是可回收空间，删了会毁掉下载",
-			n, humanize.Bytes(totalBytes(l.res.InProgress)))) + "\n")
+			n, humanize.Bytes(discover.TotalSize(l.res.InProgress)))) + "\n")
 	}
 	if n := len(l.res.Orphans); n > 0 {
 		sb.WriteString(styleSection.Render(fmt.Sprintf(
 			"孤儿 blob %d 个（可回收 %s）", n,
-			humanize.Bytes(totalBytes(l.res.Orphans)))) + "\n")
+			humanize.Bytes(discover.TotalSize(l.res.Orphans)))) + "\n")
 		for _, o := range l.res.Orphans {
 			sb.WriteString(styleDim.Render(fmt.Sprintf("  %-64s %10s",
 				humanize.Truncate(o.Name, 64), humanize.Bytes(o.Size))) + "\n")
@@ -469,14 +469,6 @@ func (l Library) emptyView(headLines, height int) string {
 		lines = lines[:budget]
 	}
 	return strings.Join(lines, "\n")
-}
-
-func totalBytes(items []discover.Item) int64 {
-	var n int64
-	for _, it := range items {
-		n += it.Size
-	}
-	return n
 }
 
 // sortItems 按名字排序，保证顺序稳定。
