@@ -207,6 +207,9 @@ func LookupKey(key string) (Entry, bool) {
 
 // LookupKeyExact 是三返回值版本：entry、是否精确命中、是否找到。
 //
+// **目前只有测试在调**：生产只调 LookupKey。留着是因为"精确 vs 推测"
+// 这个区别必须有个地方能测到 —— 它正是 LookupKey 那条后缀规则的守卫。
+//
 // **两个 bool 相邻，调用方写反了编译器不会拦** ——
 // 所以默认用 LookupKey（只要条目）或这个函数的具名变量赋值。
 func LookupKeyExact(key string) (Entry, bool, bool) {

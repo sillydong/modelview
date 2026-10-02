@@ -433,3 +433,31 @@ func TestScanDir_符号链接按目标大小(t *testing.T) {
 			got.Size, len(body), len(link))
 	}
 }
+
+// extra 的 JSON 键名要与同一份 JSON 里的其它字段一致（snake_case）。
+//
+// 原来 KV 没有 json tag，打出来是 {"Key":…,"Value":…}，而 Item 的
+// 其它字段全是 snake_case（source/name/path/size/format/arch/
+// param_count）。消费方要为这一个字段破例。
+func TestItem_extra用snake_case(t *testing.T) {
+	raw, err := json.Marshal(Item{Extra: []KV{{Key: "license", Value: "apache-2.0"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	if strings.Contains(got, `"Key"`) || strings.Contains(got, `"Value"`) {
+		t.Errorf("extra 的键名还是 PascalCase:\n%s", got)
+	}
+	for _, want := range []string{`"key":"license"`, `"value":"apache-2.0"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %s:\n%s", want, got)
+		}
+	}
+	// 同一个结构体里的其它字段也要一起看 —— 只改 KV 不改别的。
+	//
+	// **不能拿 param_count 当代表**：它是 omitempty，零值时不出现
+	//（第一版就是这么写的，于是断言恒假）。source 是必出的。
+	if !strings.Contains(got, `"source"`) {
+		t.Errorf("Item 的其它字段应当仍是 snake_case:\n%s", got)
+	}
+}

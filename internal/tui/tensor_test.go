@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sillydong/modelview/internal/analyze"
 	"github.com/sillydong/modelview/internal/model"
@@ -315,7 +316,7 @@ func TestTensorView_窄终端不超宽且不丢关键信息(t *testing.T) {
 
 	out := v.View(80, 40)
 	for _, line := range strings.Split(out, "\n") {
-		if w := displayWidth(line); w > 80 {
+		if w := lipgloss.Width(line); w > 80 {
 			t.Errorf("有一行宽 %d 列，超过 80 —— 会被静默截掉尾巴:\n%s", w, line)
 		}
 	}

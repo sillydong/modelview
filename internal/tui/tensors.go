@@ -59,6 +59,9 @@ func NewTensorsViewDtype(m *model.Model, d model.Dtype) TensorsView {
 }
 
 // NewTensorsViewName 造一个只显示名字里含关键词的张量列表。
+//
+// **目前只有测试在调**：生产路径走 NewTensorsView 之后由 `/` 输入过滤词。
+// 留着是因为测试要直接构造"已过滤"的初始态。
 func NewTensorsViewName(m *model.Model, keyword string) TensorsView {
 	return TensorsView{m: m, filter: keyword}
 }

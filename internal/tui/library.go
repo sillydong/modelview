@@ -486,11 +486,3 @@ func totalBytes(items []discover.Item) int64 {
 func sortItems(items []discover.Item) {
 	sort.SliceStable(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 }
-
-// displayWidth 按**显示宽度**算一行有多宽（中文算 2 列）。
-//
-// 不能用 len()：一个汉字 3 字节却只占 2 列，用字节数判断会把
-// 本来不超宽的行判成超宽。
-func displayWidth(s string) int {
-	return lipgloss.Width(s)
-}

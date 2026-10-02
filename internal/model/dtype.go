@@ -148,11 +148,6 @@ var dtypeTable = map[Dtype]dtypeProps{
 	DtypeIQ1M:   {IsQuantized: true, BlockSize: 256, GGMLCode: 29},
 }
 
-// Props 返回该类型的存储属性。未知类型返回零值。
-func (d Dtype) Props() dtypeProps {
-	return dtypeTable[d]
-}
-
 // BitsPerWeight 返回每权重占用的比特数，未知类型返回 0。
 func (d Dtype) BitsPerWeight() float64 { return dtypeTable[d].BitsPerWeight }
 
@@ -190,6 +185,9 @@ func AllDtypes() iter.Seq[Dtype] {
 }
 
 // Known 表示该类型是否在位宽表内。
+//
+// **目前只有测试在调**：生产路径直接问 GGMLCode() 的 ok（那才是有
+// 语义的那个判据），而 Known 只回答"表里有没有"。
 func (d Dtype) Known() bool {
 	_, ok := dtypeTable[d]
 	return ok

@@ -50,6 +50,8 @@ func (r *reader) read(p []byte) error {
 }
 
 // skip 跳过 n 字节。n 为负时报错。
+//
+// **目前只有测试在调**：生产路径按偏移定位后再读，不需要线性跳过。
 func (r *reader) skip(n int64) error {
 	if n < 0 {
 		return fmt.Errorf("skip 负数: %d", n)

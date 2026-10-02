@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sillydong/modelview/internal/discover"
 	"github.com/sillydong/modelview/internal/model"
@@ -510,7 +511,7 @@ func TestLibrary_读失败显示原因而不是路径(t *testing.T) {
 		t.Errorf("读失败时没把原因显示出来（被路径挤掉了？）:\n%s", out)
 	}
 	for _, line := range strings.Split(out, "\n") {
-		if w := displayWidth(line); w > 80 {
+		if w := lipgloss.Width(line); w > 80 {
 			t.Errorf("行宽 %d 超过 80: %q", w, line)
 		}
 	}
@@ -833,7 +834,7 @@ func TestLibrary_目录警告经根视图不被截断(t *testing.T) {
 	out := m.View()
 	// ① 每行不超宽
 	for i, l := range strings.Split(out, "\n") {
-		if w := displayWidth(l); w > 80 {
+		if w := lipgloss.Width(l); w > 80 {
 			t.Errorf("第 %d 行宽 %d 超过 80: %q", i, w, l)
 		}
 	}

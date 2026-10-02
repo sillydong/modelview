@@ -159,6 +159,11 @@ func dirWritable(dir string) bool {
 	return true
 }
 
+// exists 判断缓存文件是否已经写出来。
+//
+// **目前只有测试在调**：生产路径不需要问"有没有" —— load 自己会静默
+// 跳过缺失/损坏的缓存。留着是因为测试要断言"写成功了吗"，而
+// c.path() 为空（禁用缓存、两处都不可写）时它也答得对。
 func (c *cache) exists() bool {
 	p := c.path()
 	if p == "" {

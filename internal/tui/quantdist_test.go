@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/sillydong/modelview/internal/model"
 )
 
@@ -178,7 +180,7 @@ func TestQuantDist_表头不超宽且与数据行等宽(t *testing.T) {
 	// 所以超过 67 列的行**任何模型都放不下**，不是"本模型量出来是 67"。
 	// 实测新版：表头与数据行都是 45 列，离上界还有余量。
 	for _, line := range strings.Split(out, "\n") {
-		if w := displayWidth(line); w > 67 {
+		if w := lipgloss.Width(line); w > 67 {
 			t.Errorf("有一行宽 %d 列 —— 80 列终端下这一栏拿不到这么宽:\n%s", w, line)
 		}
 	}
@@ -197,9 +199,9 @@ func TestQuantDist_表头不超宽且与数据行等宽(t *testing.T) {
 	if header == "" || data == "" {
 		t.Fatalf("没找到表头或数据行:\n%s", out)
 	}
-	if displayWidth(header) != displayWidth(data) {
+	if lipgloss.Width(header) != lipgloss.Width(data) {
 		t.Errorf("表头 %d 列、数据行 %d 列 —— 列不对齐:\n%s\n%s",
-			displayWidth(header), displayWidth(data), header, data)
+			lipgloss.Width(header), lipgloss.Width(data), header, data)
 	}
 }
 
@@ -254,7 +256,7 @@ func TestQuantDist_文件声明行留有余量(t *testing.T) {
 			}
 
 			for _, line := range strings.Split(out, "\n") {
-				if w := displayWidth(line); w > 58 {
+				if w := lipgloss.Width(line); w > 58 {
 					t.Errorf("有一行宽 %d 列 —— 80 列终端（nav 最宽 15）下余量不足:\n%s",
 						w, line)
 				}

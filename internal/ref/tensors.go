@@ -236,7 +236,10 @@ func LookupTensorSegmentEntry(seg string) (Entry, bool) {
 	return Entry{}, false
 }
 
-// lookupTensorSegment 返回段本身（不只是条目），供包内使用。
+// lookupTensorSegment 返回段本身（不只是条目）。
+//
+// **目前只有测试在调**：生产用 LookupTensorSegmentEntry（它只要条目）。
+// 留着的价值是让测试能断言段的**形状规律**，而不只是能不能查到。
 func lookupTensorSegment(seg string) (tensorSegment, bool) {
 	for _, s := range tensorSegments {
 		if s.seg == normalizeLayer(seg) {

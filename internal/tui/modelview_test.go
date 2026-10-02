@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sillydong/modelview/internal/model"
 )
@@ -358,7 +359,7 @@ func TestModelView_右栏对齐(t *testing.T) {
 	colOf := func(s string, marker string) int {
 		for _, l := range strings.Split(s, "\n") {
 			if i := strings.Index(l, marker); i >= 0 {
-				return displayWidth(l[:i])
+				return lipgloss.Width(l[:i])
 			}
 		}
 		return -1
@@ -410,7 +411,7 @@ func TestModelView_左栏用完后右栏仍对齐(t *testing.T) {
 	col := func(marker string) int {
 		for _, l := range strings.Split(out, "\n") {
 			if i := strings.Index(l, marker); i >= 0 {
-				return displayWidth(l[:i])
+				return lipgloss.Width(l[:i])
 			}
 		}
 		return -1
@@ -457,7 +458,7 @@ func TestModelView_渲染恰好占满高度(t *testing.T) {
 					sec, h, n)
 			}
 			for i, l := range strings.Split(raw, "\n") {
-				if w := displayWidth(l); w > 100 {
+				if w := lipgloss.Width(l); w > 100 {
 					t.Errorf("栏目 %d、高度 %d：第 %d 行宽 %d: %q", sec, h, i, w, l)
 				}
 			}

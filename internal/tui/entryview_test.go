@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/sillydong/modelview/internal/ref"
 )
 
@@ -119,7 +121,7 @@ func TestEntryView_窄终端折行(t *testing.T) {
 	v := NewEntryView(nil, ref.Entry{ID: "a", Title: "A", Notes: long})
 	out := v.View(40, 30)
 	for _, line := range strings.Split(out, "\n") {
-		if n := displayWidth(line); n > 40 {
+		if n := lipgloss.Width(line); n > 40 {
 			t.Errorf("有一行宽 %d 列，超过 40:\n%s", n, line)
 		}
 	}
