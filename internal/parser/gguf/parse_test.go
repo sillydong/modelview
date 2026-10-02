@@ -389,22 +389,62 @@ func TestParse_元素总数溢出(t *testing.T) {
 	}
 }
 
-// 边界：元素总数正好等于 MaxInt64 时不该被误判成溢出。
-func TestParse_元素总数恰好不溢出(t *testing.T) {
+// 元素数能表示、但**字节数装不下**时必须置 SizeUnknown，不能静默给 0。
+//
+// 这条是 review 时被逼出来的：原来的 tensorByteSize 只查了元素数的
+// 溢出，没查最后那步 `元素数 × 每元素字节数`。实测 2^62 个 F32 元素
+// （4 字节/个）会让 2^62 × 4 回绕成 **0**，函数返回 (0, nil) ——
+// 于是 SizeUnknown 是 false，界面与 JSON 都在断言"这个张量真的是
+// 0 字节"。那正是 SizeUnknown 这个字段存在的理由。
+func TestParse_字节数溢出要标SizeUnknown(t *testing.T) {
 	b := newBuilder()
 	b.header(3, 1, 0)
 	b.str("edge")
 	b.u32(1)
-	b.u64(math.MaxInt64)
-	b.u32(0) // F32
+	b.u64(1 << 62)
+	b.u32(0) // F32：4 字节/元素
 	b.u64(0)
 	b.raw(make([]byte, alignUp(int64(len(b.bytes())), 32)-int64(len(b.bytes()))))
 
 	m, err := Parse(writeFile(t, "edge.gguf", b.bytes()))
 	if err != nil {
-		t.Fatalf("MaxInt64 个元素是能表示的，不该报错: %v", err)
+		t.Fatalf("元素数本身是能表示的，不该整体报错: %v", err)
 	}
-	if got := m.Tensors[0].ParamCount; got != math.MaxInt64 {
-		t.Errorf("ParamCount = %d, want %d", got, int64(math.MaxInt64))
+	tn := m.Tensors[0]
+	// 元素数是对的：这一半没问题
+	if tn.ParamCount != 1<<62 {
+		t.Errorf("ParamCount = %d, want %d", tn.ParamCount, int64(1)<<62)
+	}
+	// 字节数算不出来，必须**显式**标出来
+	if !tn.SizeUnknown {
+		t.Errorf("SizeUnknown = false，而 ByteSize = %d —— 那是在说"+
+			"这个张量真的是 0 字节", tn.ByteSize)
+	}
+	if len(m.Warnings) == 0 {
+		t.Error("算不出大小必须产生告警，否则用户看不到")
+	}
+}
+
+// 边界：字节数正好能装下时不该被误判成溢出。
+func TestParse_字节数恰好不溢出(t *testing.T) {
+	b := newBuilder()
+	b.header(3, 1, 0)
+	b.str("edge")
+	b.u32(1)
+	b.u64(math.MaxInt64 / 4) // F32：×4 之后正好是 MaxInt64
+	b.u32(0)
+	b.u64(0)
+	b.raw(make([]byte, alignUp(int64(len(b.bytes())), 32)-int64(len(b.bytes()))))
+
+	m, err := Parse(writeFile(t, "edge.gguf", b.bytes()))
+	if err != nil {
+		t.Fatalf("字节数正好能表示，不该报错: %v", err)
+	}
+	tn := m.Tensors[0]
+	if tn.SizeUnknown {
+		t.Error("SizeUnknown = true，但这个大小是算得出来的")
+	}
+	if want := int64(math.MaxInt64) / 4 * 4; tn.ByteSize != want {
+		t.Errorf("ByteSize = %d, want %d", tn.ByteSize, want)
 	}
 }

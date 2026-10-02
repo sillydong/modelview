@@ -123,11 +123,23 @@ func tensorByteSize(dims []int64, code uint32) (int64, error) {
 	if !ok {
 		return 0, ErrUnknownBlockType{Code: code}
 	}
+	// **最后的乘法也要查溢出**：元素数能表示不代表字节数能表示。
+	// 实测 dims=[2^62]、F32（4 字节/元素）：2^62 × 4 回绕成 **0**，
+	// 这里返回 (0, nil) —— 于是调用方把 SizeUnknown 置为 false，
+	// 界面与 JSON 都在断言"这个张量真的是 0 字节"，
+	// 而那正是 SizeUnknown 这个字段存在的理由（见 model.Tensor 的说明）。
+	//
+	// 只查元素数的溢出是不够的：2^62 个元素本身完全合法，
+	// 超出的发生在乘每元素字节数这一步。
+	blocks := elems
 	if h := dtype.BlockElems(); h > 1 {
 		if elems%h != 0 {
 			return 0, fmt.Errorf("元素数 %d 不是块大小 %d 的整数倍", elems, h)
 		}
-		return (elems / h) * perBlock, nil
+		blocks = elems / h
 	}
-	return elems * perBlock, nil
+	if blocks != 0 && blocks > math.MaxInt64/perBlock {
+		return 0, fmt.Errorf("元素数 %d 换算成字节数后超出 int64 上限", elems)
+	}
+	return blocks * perBlock, nil
 }
