@@ -36,7 +36,7 @@ func run() error {
 		sampleLimit = flag.Int("sample-limit", analyze.DefaultSampleLimit,
 			"单张量统计的采样上限（元素数），0 表示不采样（会读完整个张量，"+
 				"大模型上峰值内存可达数 GB）。"+
-				"注意它**只管统计**：量化张量的块级诊断要读遍全部块头才能"+
+				"注意它只管统计：量化张量的块级诊断要读遍全部块头才能"+
 				"找出被压得最狠的子块，不受这个上限约束")
 	)
 	flag.Usage = func() {
