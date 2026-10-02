@@ -26,6 +26,29 @@ go install ./cmd/modelview              # 或装到 $GOBIN
 
 产出的二进制是自包含的，运行时不需要任何外部文件。依赖只有 `bubbletea`（TUI 框架）与 `lipgloss`（样式），其余全是标准库。
 
+## 支持什么
+
+格式**按 magic bytes 判断，不看扩展名**：
+
+| 特征 | 判定 |
+|---|---|
+| `GGUF` | GGUF |
+| 前 8 字节是 < 100 MiB 的小端 u64，后接 `{` | safetensors |
+| `PK\x03\x04` | PyTorch（ZIP 容器） |
+
+GGUF 的数据区起点按 `general.alignment` 对齐（默认 32）；
+PyTorch 走自己实现的精简 pickle 解析器（只覆盖 `torch._utils._rebuild_tensor_v2` 用到的 opcode 子集，不引入第三方 pickle 库），
+遇到不认识的 opcode 会报出是哪个字节（`未支持的 pickle 操作码 0x..`）而不是崩溃。
+
+| 能力 | 覆盖的 dtype |
+|---|---|
+| 解码出数值（统计 / 量化模拟） | F64 F32 F16 BF16、I64 I32 I16 I8、U64 U32 U16 U8、BOOL，以及 Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 Q2_K Q3_K Q4_K Q5_K Q6_K |
+| 只读块头（量化诊断） | 同上那 10 个量化类型 |
+| 只收录块结构（能算占用大小） | MXFP4 NVFP4 Q8_1 Q8_K，以及 IQ1_S IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S IQ4_NL IQ4_XS IQ1_M |
+
+IQ 系列与 MXFP4 / NVFP4 **没有解码器**，也不给位宽：算占用大小时明确报「未收录」，
+而不是给出一个可能错误的数字。同理，Q8_1 / Q8_K 的块字节数收录了，但内部布局没有独立参照验证过，所以不解码。
+
 ## 用法
 
 ### 模型库：看本机装了什么
@@ -106,36 +129,41 @@ modelview --json --stats model.gguf > a.json  # 附带 stats / quant / quant_sim
 选项**必须写在位置参数前面**。`modelview scan --json` 里的 `--json` 会被 Go 的 flag 静默丢弃，
 所以本程序宁可报错也不猜；路径本身以 `-` 开头时写在 `--` 之后。
 
-`--stats` 时的输出形状（示例为真实输出，`histogram` 是 64 个桶，此处省略）：
+顶层形状（取自真实输出，`tensors` 数组在此省略；每项的字段见表）：
 
 ```json
 {
   "path": "…/blobs/sha256-5ee4f07cdb9be…",
   "format": "GGUF", "version": "v3", "file_size": 1929903008,
   "arch": "qwen2", "param_count": 3085938688,
-  "metadata": [
-    {"key": "general.architecture", "value": "qwen2", "raw": "qwen2"}
-  ],
-  "tensors": [{
-    "name": "blk.0.ffn_gate.weight", "dims": [2048, 11008],
-    "dtype": "Q4_K", "offset": 279710624, "byte_size": 12681216,
-    "param_count": 22544384,
-    "stats": {
-      "count": 10000000, "min": -0.369140625, "max": 0.576054573059082,
-      "mean": -0.00005002, "std": 0.02677329,
-      "nan": 0, "inf": 0, "zero_ratio": 0.0000715, "outlier_ratio": 0.004678,
-      "histogram": "… 64 桶 …", "sampled": true
-    },
-    "quant": {
-      "scheme": "Q4_K", "bits_per_weight": 4.5,
-      "blocks": 88064, "sub_blocks": 704512, "block_elems": 32,
-      "scale_min": 0.002772808, "scale_max": 0.049326897,
-      "scale_mean": 0.007516265, "scale_median": 0.007301569,
-      "zero_scale_blocks": 0, "flattest_ratio": 0.142857,
-      "flattest_scale": 0.003677845, "flattest_index": 327194
-    }
-  }]
+  "metadata": [{"key": "general.architecture", "value": "qwen2", "raw": "qwen2"}],
+  "tensors": [ … ]
 }
+```
+
+`tensors[*]` 的字段：
+
+| 字段 | 含义 |
+|---|---|
+| `name` `dims` `dtype` `offset` `byte_size` `param_count` | 结构信息 |
+| `stats` | 数值统计，字段见下 |
+| `quant` | 量化诊断。**只有已量化的张量有**，字段见「量化分析」 |
+| `quant_sims` | 量化模拟三档。**只有浮点张量有** |
+
+`stats` 的字段：
+
+| 字段 | 含义 |
+|---|---|
+| `count` `min` `max` `mean` `std` | 样本数与基本统计量（`count` 含 NaN/Inf） |
+| `nan` `inf` | 非有限值计数，只计数、不参与上面的统计 |
+| `zero_ratio` `outlier_ratio` | 精确为零、超出 μ±3σ 的比例 |
+| `histogram` | 64 桶计数，界面上的字符画就是它 |
+| `sampled` | 这份统计是否来自采样 |
+
+拿单个张量的完整结构：
+
+```bash
+modelview --json --stats model.gguf | jq '.tensors[0]'
 ```
 
 ### 选项
@@ -233,7 +261,7 @@ qwen2.5:3b · GGUF v3 · 1.80 GiB · 434 张量 · 3.086 G 参数
 
 ### 速查表
 
-五组静态数据（数值格式 / 量化方案 / GGUF 元数据键 / 张量命名 / GGML 类型码），
+五组静态数据（`数值格式` / `量化方案` / `GGUF 元数据键` / `张量命名` / `GGML 类型码`），
 从元数据或张量名可以 `Enter` 跳进对应条目，条目里再 `Enter` 反查「本模型里有哪些张量用了它」。
 
 ```
@@ -279,7 +307,7 @@ NaN / Inf **只计数，不参与** min / max / mean / std —— 否则一个 I
 实测 nomic-embed 的 336 条模拟里 168 条恰好等于 1）；
 `max_rel_err_sig` 只统计 |x| 大于该张量峰值 5e-2 的元素，才是能用来比较量化质量的数。
 
-**情况 B：已量化张量（Q4_K / Q6_K / Q8_0 等）→ 反解块结构**
+**情况 B：已量化张量（Q4_K / Q6_K / Q8_0 等）→ 量化诊断（反解块结构）**
 
 只读块头里的 `scale` / `min`，不反量化权重，所以能覆盖**全量**子块而不受采样影响：
 
@@ -292,6 +320,10 @@ NaN / Inf **只计数，不参与** min / max / mean / std —— 否则一个 I
 中位数是唯一必须看到全部值才能精确算出的量，子块数可达千万级，
 因此设了 8 MiB 的样本预算（`1<<21` 个样本 × 4 字节，蓄水池抽样、种子固定），超预算时 JSON 里置
 `scale_median_sampled: true`。**min / max / 均值 / 零计数 / 最扁 任何时候都是全量精确的。**
+
+> 本节引用的实测数字（统一公式的 6.26 dB 摆动、`max_rel_err` 的 168/336、块复现率）出自
+> [设计文档 §6.2](docs/superpowers/specs/2026-09-26-modelview-design.md)，
+> 那里有完整测量过程与复现命令；这里只留结论。
 
 ### 内存
 
@@ -319,31 +351,6 @@ NaN / Inf **只计数，不参与** min / max / mean / std —— 否则一个 I
 失效判据四者缺一不可：结构版本、文件大小、修改时间、采样上限。
 不缓存原始权重数据，`--no-cache` 时既不读也不写。
 
-## 支持的格式与类型
-
-格式**按 magic bytes 判断，不看扩展名**：
-
-| 特征 | 判定 |
-|---|---|
-| `GGUF` | GGUF |
-| 前 8 字节是 < 100 MiB 的小端 u64，后接 `{` | safetensors |
-| `PK\x03\x04` | PyTorch（ZIP 容器） |
-
-GGUF 的数据区起点按 `general.alignment` 对齐（默认 32）；
-PyTorch 走自己实现的精简 pickle 解析器（只覆盖 `torch._utils._rebuild_tensor_v2` 用到的 opcode 子集，不引入第三方 pickle 库），
-遇到不认识的 opcode 会报出是哪个字节（`未支持的 pickle 操作码 0x..`）而不是崩溃。
-
-### 类型覆盖
-
-| 能力 | 覆盖的 dtype |
-|---|---|
-| 解码出数值（统计 / 量化模拟） | F64 F32 F16 BF16、I64 I32 I16 I8、U64 U32 U16 U8、BOOL，以及 Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 Q2_K Q3_K Q4_K Q5_K Q6_K |
-| 只读块头（scale 诊断） | 同上那 10 个量化类型 |
-| 只收录块结构（能算占用大小） | MXFP4 NVFP4 Q8_1 Q8_K，以及 IQ1_S IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S IQ4_NL IQ4_XS IQ1_M |
-
-IQ 系列与 MXFP4 / NVFP4 **没有解码器**，也不给位宽：算占用大小时明确报「未收录」，
-而不是给出一个可能错误的数字。同理，Q8_1 / Q8_K 的块字节数收录了，但内部布局没有独立参照验证过，所以不解码。
-
 ## 代码结构
 
 ```
@@ -364,8 +371,9 @@ internal/
 `tui/` 与 `analyze/` 只依赖 `model.Model`，不知道底层格式。
 新增格式时只改 `detect/` + `parser/`，其余不动。
 
-TUI 是纯函数式的 `Update` / `View`，所有 I/O 都通过 `tea.Cmd` 完成；
-后台扫描用自续式 `tea.Cmd` 链，没有长生命周期的 goroutine 或 channel。
+TUI 的 `Update` / `View` 是纯函数，I/O 走 `tea.Cmd`；后台扫描是自续式的
+`tea.Cmd` 链而不是常驻 goroutine —— 取舍与理由写在 `internal/tui` 的注释里，
+那里是唯一出处。
 
 ## 开发
 
@@ -376,6 +384,7 @@ gofmt -l .                              # 应无输出
 golangci-lint run ./...
 go test ./...
 go test ./... -race
+python3 tools/check_readme.py           # 本文档与代码的名字/路径是否一致
 ```
 
 ### 真实语料
@@ -410,6 +419,7 @@ MODELVIEW_REAL=1 go test ./...
 | `mutate.py` | 变异验证：破坏一处实现 → 确认测试变红 → 按 SHA-256 还原（自带 `mutate_test.py`） |
 | `drive_tui.py` | 在真 pty 里驱动 TUI 并逐步断言，含最小 vt100 屏幕模型（自带 `drive_tui_test.py`） |
 | `check_real_switch.sh` | 验证 `MODELVIEW_REAL=1` 真的拦得住「静默跳过」 |
+| `check_readme.py` | 核对本文档里可机械验证的名字与路径（选项名 / 仓库路径 / 扫描根 / 脚本名 / 速查表组名）与代码一致 |
 
 验证产物**入库**（`internal/decode/testdata/`、`internal/ref/testdata/`），
 所以日常 `go test` 既不需要网络也不需要 Python —— 重跑上面这些脚本是为了**重新生成**它们。
