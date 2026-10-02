@@ -286,10 +286,25 @@ func TestQuants_位宽的两条出口一致(t *testing.T) {
 			if got == "" || got == "未收录" {
 				continue
 			}
-			name := strings.TrimPrefix(e.ID, "quant:")
+			// **两条来源**：quant: 条目的名字就是 ID 后缀；ggmltype:
+			// 条目的 ID 是类型码，名字在"类型名"字段里。
+			//
+			// 加了 ggmltype 表之后这条测试第一次跑就红了 —— 它原来
+			// 假设"带位宽字段的都是 quant 条目"。**改成扩展覆盖面而不是
+			// 缩小**：新表也有位宽，就一起受这条一致性检查。
+			var name string
+			switch {
+			case strings.HasPrefix(e.ID, "quant:"):
+				name = strings.TrimPrefix(e.ID, "quant:")
+			case strings.HasPrefix(e.ID, "ggmltype:"):
+				name = e.Field("类型名")
+			default:
+				t.Errorf("%s 有「位宽」字段，但这条测试不认识它的 ID 形状", e.ID)
+				continue
+			}
 			bpw, ok := bpwOf(name)
 			if !ok {
-				t.Errorf("%s 有「位宽」字段却取不到位宽", e.ID)
+				t.Errorf("%s 有「位宽」字段却取不到位宽（名字 %q）", e.ID, name)
 				continue
 			}
 			checked++
@@ -301,7 +316,8 @@ func TestQuants_位宽的两条出口一致(t *testing.T) {
 	}
 	// 反向门禁：0 条时这条测试是空转的（与 TestQuants_覆盖全部量化类型
 	// 那个 wantCovered 同一个约定：增删量化条目时同步改这里）
-	const wantChecked = 23
+	// 23 个 quant + 33 个 ggmltype（其中已删的 4/5 没有位宽字段）
+	const wantChecked = 23 + 31
 	if checked != wantChecked {
 		t.Fatalf("只对照了 %d 条位宽，预期 %d 条", checked, wantChecked)
 	}

@@ -76,6 +76,7 @@ var tablesOnce = sync.OnceValue(func() []Table {
 		quantsTable(),
 		ggufKeysTable(),
 		tensorNamingTable(),
+		ggmlTypeTable(),
 	}
 })
 

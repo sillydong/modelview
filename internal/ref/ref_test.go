@@ -63,8 +63,11 @@ func TestTables_结构自洽(t *testing.T) {
 	if entries == 0 {
 		t.Fatal("一个条目都没有")
 	}
-	// 反向门禁：条目总数掉了说明表被删了
-	const wantEntries = 249
+	// 反向门禁：条目总数掉了说明表被删了。
+	//
+	// 282 = 249 + 33：新增了「GGML 类型码」那张表（31 个已有码
+	// + 2 个上游已删的 4/5）。增删条目时同步改这里。
+	const wantEntries = 282
 	if entries != wantEntries {
 		t.Errorf("条目总数 %d，预期 %d —— 增删条目时同步改这里", entries, wantEntries)
 	}
