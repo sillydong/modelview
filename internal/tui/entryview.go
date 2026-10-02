@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -127,10 +128,10 @@ func (v EntryView) View(width, _ int) string {
 		// 值要折行：量化条目的说明里有整段中文，
 		// 一行放不下时超宽会被终端自动折行，整个界面往下错位
 		fmt.Fprintf(&sb, "%s  %s\n", styleField.Render(f.Key),
-			wrapText(f.Value, max(width-lipgloss.Width(f.Key)-2, 10)))
+			renderEmphasis(f.Value, max(width-lipgloss.Width(f.Key)-2, 10), emph))
 	}
 	if v.e.Notes != "" {
-		sb.WriteString("\n" + wrapText(v.e.Notes, width) + "\n")
+		sb.WriteString("\n" + renderEmphasis(v.e.Notes, width, emph) + "\n")
 	}
 	// 跳转目标按 group 分段渲染，标题只在切换分组时打一次。
 	//
@@ -167,4 +168,79 @@ func (v EntryView) View(width, _ int) string {
 	// `TrimRight` 而不是 `TrimSuffix`：Notes 缺省、且 fields 与 targets 都为空时，
 	// 末尾可能连着两个换行（实测踩过）—— `TrimSuffix` 只去一个，守卫仍会红。
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// boldMark 是条目文本里的粗体标记。
+//
+// 速查表的数据（`ref/` 里的 Notes 与字段值）是当作 Markdown 写的，
+// 里面有几十处 `**…**`。在这之前没有任何东西负责渲染它们 ——
+// 实测截图：条目详情页上原样显示 `**最常见的 4 位档**`。
+const boldMark = "**"
+
+// renderEmphasis 把 `**…**` 换成粗体，同时按显示宽度折行。
+//
+// ## 为什么解析与折行必须在一趟里做完
+//
+// 先给整串上样式再交给 wrapText 是错的：wrapText 按 rune 累加
+// lipgloss.Width，而转义序列会被算成 0 宽（或者按字符数算进去），
+// 于是断行点落在转义序列中间，屏幕上出现半个转义码 ——
+// 剩下的部分被终端当成普通文字吃掉一大段。
+// 这里只有裸文本参与算宽度，样式在**已经确定断点之后**才贴上去。
+//
+// ## bold 为什么是参数
+//
+// 测试里不能直接调 styleEmph.Render：`go test` 的 stdout 不是终端，
+// lipgloss 会退化成 ASCII profile 并**直接把原文返回**，于是
+// "样式有没有加上"在断言里看不出来 —— 那样的测试是空转的
+// （它只证明标记被吃掉了，证明不了粗体生效）。
+// 传一个确定的函数进来，测试才断言得出样式作用在哪一段上。
+//
+// ## 标记不成对时整个当普通文本
+//
+// 不是"从第一个标记开始一直粗到底"：半应用会让数据里少写一个 `**`
+// 变成不可见的事故（星号被吃掉、后面整段悄悄变粗），
+// 而宁可露出两个星号，让人看见这里写错了。
+func renderEmphasis(s string, width int, bold func(string) string) string {
+	if strings.Count(s, boldMark)%2 != 0 {
+		return wrapText(s, width)
+	}
+
+	var (
+		out  strings.Builder
+		run  strings.Builder // 当前这一段同样式的文本
+		isB  bool            // 当前段是不是粗体
+		line int             // 当前行已占的显示宽度
+	)
+	flush := func() {
+		if run.Len() == 0 {
+			return
+		}
+		if isB {
+			out.WriteString(bold(run.String()))
+		} else {
+			out.WriteString(run.String())
+		}
+		run.Reset()
+	}
+
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], boldMark) {
+			flush() // 换样式之前先结算上一段，免得粗体区间串到标记之后
+			isB = !isB
+			i += len(boldMark)
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		rw := lipgloss.Width(string(r))
+		if width > 0 && line+rw > width {
+			flush()
+			out.WriteByte('\n')
+			line = 0
+		}
+		run.WriteRune(r)
+		line += rw
+	}
+	flush()
+	return out.String()
 }

@@ -27,6 +27,13 @@ var (
 	// 段落标题（"孤儿 blob"）
 	styleSection = lipgloss.NewStyle().Bold(true)
 
+	// 条目文本里的行内强调（数据写成 `**这样**`）。
+	//
+	// 与 styleSection 分开而不是复用：那个是"整行都是标题"，
+	// 这个是"一句话里加重的几个字"，将来要改成高亮或下划线时
+	// 不会连带把段落标题一起改掉。
+	styleEmph = lipgloss.NewStyle().Bold(true)
+
 	// 告警（读失败、未完成的下载）
 	styleWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
@@ -39,3 +46,11 @@ var (
 	// 可跳转的关联标注（"[general.file_type = 15（MOSTLY_Q4_K_M）] ◂"）
 	styleLink = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
+
+// emph 是 styleEmph.Render 的一元化形式。
+//
+// 单独包一层是因为 Render 是**变参**的（lipgloss 的签名是 ...string），
+// 而 renderEmphasis 要的是 func(string) string —— 变参函数不能直接当
+// 一元函数传。那个参数形状是必须的：测试要能换成一个确定的实现，
+// 否则"样式有没有加上"在断言里看不出来（见 renderEmphasis 的说明）。
+func emph(s string) string { return styleEmph.Render(s) }

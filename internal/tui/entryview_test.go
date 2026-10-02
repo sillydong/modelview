@@ -116,6 +116,89 @@ func TestEntryView_无SeeAlso不显示那一节(t *testing.T) {
 }
 
 // 窄终端下 Notes 要折行，不能超宽 —— 超宽会被终端自动折行，整个界面错位。
+// 测试用的粗体函数：用真的 ANSI 序列，不是 "<b>" 之类的代用标记。
+//
+// 理由是宽度断言：lipgloss.Width 把 ANSI 转义算作 0 宽，所以带样式的串
+// 折行之后每行仍然应当不超过 width。换成可见的替代标记，宽度断言量的
+// 就成了那些标记，与生产路径不是一回事。
+func ansiBold(s string) string { return "\x1b[1m" + s + "\x1b[0m" }
+
+// **条目里的 `**粗体**` 要变成真粗体，星号不能原样打到屏幕上。**
+//
+// 这条测试是被真实截图逼出来的：速查表条目 detail 页上显示的是
+// `**最常见的 4 位档**`，星号一个不少。数据写的是 Markdown，
+// 而 EntryView 直接 wrapText 输出，中间没有任何东西负责渲染。
+//
+// 断言用全等而不是 Contains：Contains 在"标记被吃掉了但样式没加"时
+// 也会通过，那正是这个 bug 的另一半。
+func TestRenderEmphasis_粗体标记换成样式(t *testing.T) {
+	got := renderEmphasis("前面**重点**后面", 100, ansiBold)
+	want := "前面" + ansiBold("重点") + "后面"
+	if got != want {
+		t.Errorf("渲染结果不对\n got %q\nwant %q", got, want)
+	}
+}
+
+// 折行必须在**去掉标记之后**按显示宽度算，而且不能把 ANSI 序列切开。
+//
+// 反例是"先给整串上样式再交给 wrapText"：那样宽度里混进了转义序列的
+// 字符（或者被算成 0 宽导致行超长），断行点还可能落在转义序列中间。
+func TestRenderEmphasis_折行不超宽也不切断样式(t *testing.T) {
+	long := strings.Repeat("很长的说明文字**重点**再长一点。", 6)
+	out := renderEmphasis(long, 30, ansiBold)
+	for _, line := range strings.Split(out, "\n") {
+		if n := lipgloss.Width(line); n > 30 {
+			t.Errorf("有一行宽 %d 列，超过 30：%q", n, line)
+		}
+		// 每一行的转义序列都必须是完整的：奇数个 \x1b 说明被切在半路
+		if n := strings.Count(line, "\x1b"); n%2 != 0 {
+			t.Errorf("转义序列被切断（%d 个 ESC）:%q", n, line)
+		}
+	}
+	if !strings.Contains(out, ansiBold("重点")) {
+		t.Errorf("粗体跨行后没有保住样式：\n%q", out)
+	}
+}
+
+// **标记不成对时整个当普通文本**，而不是"从第一个标记开始一直粗到底"。
+//
+// 半应用会让"数据里少写了一个 `**`"变成不可见：星号被吃掉、后面整段
+// 悄悄变粗，而屏幕上没有任何东西提示这里出过错。宁可露出两个星号。
+func TestRenderEmphasis_奇数标记不半应用(t *testing.T) {
+	got := renderEmphasis("正常**从这里开始没闭合", 100, ansiBold)
+	want := wrapText("正常**从这里开始没闭合", 100)
+	if got != want {
+		t.Errorf("不成对时应当原样输出\n got %q\nwant %q", got, want)
+	}
+}
+
+// 没有标记的文本走的是原路径：渲染结果必须与 wrapText 逐字相同，
+// 否则这次改动会顺手改掉所有条目的折行行为。
+func TestRenderEmphasis_无标记时与wrapText一致(t *testing.T) {
+	long := strings.Repeat("没有标记的普通说明文字。", 8)
+	if got, want := renderEmphasis(long, 30, ansiBold), wrapText(long, 30); got != want {
+		t.Errorf("无标记时的输出与 wrapText 不一致\n got %q\nwant %q", got, want)
+	}
+}
+
+// 端到端：条目详情页上不能出现字面星号。
+func TestEntryView_粗体标记不上屏(t *testing.T) {
+	e := ref.Entry{ID: "a", Title: "A", Notes: "**最常见的 4 位档**。_M 档会把关键张量升到 Q6_K"}
+	v := NewEntryView(nil, ref.Entry{
+		ID: e.ID, Title: e.Title, Notes: e.Notes,
+		Fields: []ref.Field{{Key: "枚举名", Value: "**MOSTLY_Q4_K_M**"}},
+	})
+	out := v.View(100, 30)
+	if strings.Contains(out, "**") {
+		t.Errorf("星号原样漏到屏幕上了：\n%s", out)
+	}
+	for _, want := range []string{"最常见的 4 位档", "MOSTLY_Q4_K_M"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("文字被吃掉了，找不到 %q：\n%s", want, out)
+		}
+	}
+}
+
 func TestEntryView_窄终端折行(t *testing.T) {
 	long := strings.Repeat("这是一段很长的中文说明，用来验证折行。", 5)
 	v := NewEntryView(nil, ref.Entry{ID: "a", Title: "A", Notes: long})
