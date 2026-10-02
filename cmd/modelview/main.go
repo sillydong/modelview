@@ -53,12 +53,23 @@ func run() error {
 	// 打出来的是人类可读的列表 —— 脚本把它管道给 jq 才报错，
 	// 而报错的地方离原因很远。实测过这个行为。
 	//
-	// 宁可报错也不要猜：写 `--` 可以显式终止选项解析。
-	for _, a := range flag.Args() {
-		if strings.HasPrefix(a, "-") && a != "-" {
-			flag.Usage()
-			return fmt.Errorf("选项 %q 写在位置参数后面了，不会被解析；"+
-				"选项要写在前面，例如 modelview --json scan", a)
+	// 宁可报错也不要猜。
+	//
+	// **`--` 之后要豁免**：flag 会把 `--` 自己**消费掉**，`flag.Args()` 里
+	// 仍然留着它后面的参数 —— 只看 Args() 的话守卫照样拒绝，而上面那句
+	// 「写 `--` 可以显式终止选项解析」就成了一个**不存在的逃生口**。
+	// 实测：`modelview --no-cache -- -weird.gguf` 被拒，
+	// 于是名字以 - 开头的模型文件永远打不开，而提示语给的办法无效。
+	//
+	// 判据只能看 os.Args（flag 消费掉的东西在 Args() 里找不回来）。
+	if !slices.Contains(os.Args, "--") {
+		for _, a := range flag.Args() {
+			if strings.HasPrefix(a, "-") && a != "-" {
+				flag.Usage()
+				return fmt.Errorf("选项 %q 写在位置参数后面了，不会被解析；"+
+					"选项要写在前面，例如 modelview --json scan（"+
+					"路径本身以 - 开头时写在 `--` 之后）", a)
+			}
 		}
 	}
 

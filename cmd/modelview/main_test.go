@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sillydong/modelview/internal/analyze"
@@ -146,5 +149,65 @@ func TestCache_非有限值的数据也能落盘(t *testing.T) {
 	}
 	if len(entries) == 0 {
 		t.Error("缓存目录是空的 —— save 静默失败了（json.Marshal 又碰上了非有限值）")
+	}
+}
+
+// resetFlags 重置全局 flag 集合并设置 os.Args。
+//
+// **必须做这件事**：run() 里调的是 flag.Parse()，而 flag.CommandLine 是
+// 全局的 —— 同一个进程里跑第二次 run() 会因 flag 重复注册而 panic
+// （"flag redefined: json"）。那个 panic 看起来像被测代码崩了，实际是
+// 测试自己造成的，很容易误判。SetOutput(io.Discard) 是顺手把它在
+// 用法错误时打的噪音收掉（要断言输出时用管道接 os.Stdout）。
+func resetFlags(t *testing.T, args ...string) {
+	t.Helper()
+	old := os.Args
+	flag.CommandLine = flag.NewFlagSet("modelview", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(io.Discard)
+	os.Args = append([]string{"modelview"}, args...)
+	t.Cleanup(func() { os.Args = old })
+}
+
+// `--` 之后的参数是纯位置参数，不该再套用"选项写在位置参数后面"的守卫。
+//
+// flag.Parse 会把 `--` 自己消费掉，所以 flag.Args() 里仍然留着它后面的
+// `-weird.gguf` —— 只看 Args() 的话，原来的守卫照样拒绝，而**提示语教的
+// 正是"写 `--` 可以显式终止选项解析"**：一个不存在的逃生口。
+// 名字以 - 开头的模型文件因此永远打不开。
+func TestRun_双横线后的参数被当作路径(t *testing.T) {
+	dir := t.TempDir()
+	name := "-weird.gguf"
+	if err := os.WriteFile(filepath.Join(dir, name),
+		buildMinimalGGUF("t", 0, 4, make([]byte, 16)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	resetFlags(t, "--no-cache", "--", name)
+
+	if err := run(); err != nil {
+		t.Fatalf("`--` 之后的路径被当成选项了: %v", err)
+	}
+}
+
+// 反面：**没有** `--` 时那条守卫必须照旧生效 ——
+// 否则 `modelview scan --json` 里的 --json 会被静默丢掉，
+// 打出来的人类可读列表被管道给 jq 才报错，而报错的地方离原因很远。
+func TestRun_选项写在位置参数后面仍要报错(t *testing.T) {
+	resetFlags(t, "scan", "--json")
+	err := run()
+	if err == nil {
+		t.Fatal("`scan --json` 应当报错（选项会被静默丢掉）")
+	}
+	// **断言必须打在守卫特有的文案上**。
+	// 第一版写的是 `strings.Contains(err.Error(), "--json")` ——
+	// 而关掉守卫之后 run() 会返回「交互界面需要终端；非交互请用
+	// modelview --json scan」，那句提示里**也含 --json**，
+	// 于是测试照样通过（变异验证实测报「漏网」）。
+	// 判据要挑一个只有守卫会说的词。
+	if !strings.Contains(err.Error(), "写在位置参数后面") {
+		t.Errorf("应当由那条守卫报错，得到: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--json") {
+		t.Errorf("错误信息应指明是哪个选项，得到: %v", err)
 	}
 }
