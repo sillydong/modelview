@@ -211,3 +211,94 @@ func TestRun_选项写在位置参数后面仍要报错(t *testing.T) {
 		t.Errorf("错误信息应指明是哪个选项，得到: %v", err)
 	}
 }
+
+// --sample-limit 0 时要先给出预估峰值。
+//
+// 帮助文本里那句"峰值内存可达数 GB"是泛泛的，用户在看到自己这个文件的
+// 数字之前不会把它和自己联系起来。实测（优化后）最大张量 3.11 亿元素
+// 时峰值 2.4 GiB，约 8 B/元素。
+func TestRun_不采样时给出预估(t *testing.T) {
+	dir := t.TempDir()
+	// **必须大到超过预警阈值**：warnNoSample 对预估 < 1 GiB 的不提示
+	//（小模型上那只是噪音）。按 8 B/元素算，1 GiB 对应约 1.34 亿元素 ——
+	// 第一版用了 1e8（763 MiB），于是测试测的是"阈值以下"那条路径。
+	p := filepath.Join(dir, "big.gguf")
+	if err := os.WriteFile(p, buildMinimalGGUF("big", 0 /*F32*/, 200_000_000, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, w, _ := os.Pipe()
+	oldErr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldErr })
+
+	resetFlags(t, "--no-cache", "--stats", "--sample-limit", "0", p)
+	// 统计会失败（数据区是空的），但那不是这条测试关心的 ——
+	// 预警必须在**开始跑之前**就打出来
+	_ = run()
+	_ = w.Close() // 关掉写端让读端拿到 EOF；失败不影响断言
+	got, _ := io.ReadAll(r)
+
+	if !strings.Contains(string(got), "预估") {
+		t.Errorf("--sample-limit 0 时没有给出预估:\n%s", got)
+	}
+	// 2e8 元素 × 8 B ≈ 1.49 GiB —— 量级要对得上
+	if !strings.Contains(string(got), "GiB") {
+		t.Errorf("预估里没有量级:\n%s", got)
+	}
+}
+
+// 默认采样（不传 --sample-limit）时不打这条 —— 否则每次跑都多一行噪音。
+//
+// **fixture 必须与上面那条一样大**：第一版用了 1e8 元素（763 MiB），
+// 低于 1 GiB 的预警阈值，于是"不预警"这个结果由**大小**就能解释 ——
+// 把 `limit != 0` 那道守卫删掉它照样通过（变异验证会报「漏网」）。
+// 用同样超阈值的输入，"不预警"才只能由守卫解释。
+func TestRun_默认采样不预警(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "big.gguf")
+	if err := os.WriteFile(p, buildMinimalGGUF("big", 0, 200_000_000, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, w, _ := os.Pipe()
+	oldErr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldErr })
+
+	resetFlags(t, "--no-cache", "--stats", p)
+	_ = run()
+	_ = w.Close() // 关掉写端让读端拿到 EOF；失败不影响断言
+	got, _ := io.ReadAll(r)
+
+	if strings.Contains(string(got), "预估") {
+		t.Errorf("默认采样不该打预估:\n%s", got)
+	}
+}
+
+// 小模型上 --sample-limit 0 不预警：按 8 B/元素算不到 1 GiB 时只是噪音。
+//
+// 没有这条的话，那道大小阈值就是一段**没人看着的守卫** ——
+// 把它删掉（永远预警）不会有任何测试变红。
+func TestRun_小模型不采样也不预警(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "small.gguf")
+	// 1e6 元素 × 8 B = 8 MiB，远低于阈值
+	if err := os.WriteFile(p, buildMinimalGGUF("small", 0, 1_000_000, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, w, _ := os.Pipe()
+	oldErr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldErr })
+
+	resetFlags(t, "--no-cache", "--stats", "--sample-limit", "0", p)
+	_ = run()
+	_ = w.Close() // 关掉写端让读端拿到 EOF；失败不影响断言
+	got, _ := io.ReadAll(r)
+
+	if strings.Contains(string(got), "预估") {
+		t.Errorf("小模型不该打预估（那是噪音）:\n%s", got)
+	}
+}

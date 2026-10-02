@@ -101,6 +101,7 @@ func run() error {
 	}
 
 	if *asStats {
+		warnNoSample(m, *sampleLimit)
 		if err := runStats(m, *sampleLimit, *noCache); err != nil {
 			return err
 		}
@@ -258,4 +259,37 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// warnNoSample 在 `--sample-limit 0`（不采样）时先给出预估峰值。
+//
+// **不采样是唯一会爆炸的路径**：默认 1e7 采样时峰值与模型总大小无关
+// （实测 qwen2.5:3b 全量 335 MiB），而不采样时峰值与**最大那张张量**
+// 的元素数成正比。实测（优化后）3.11 亿元素的张量 → 2.44 GiB，
+// 约 8 B/元素（out 的 4 B 加 GC 系数）。
+//
+// 帮助文本里那句"大模型上峰值内存可达数 GB"是泛泛的，用户在看到自己
+// 这个文件的数字之前不会把它和自己联系起来。
+//
+// **只提示、不阻止**：语义是用户明确选的，拦下来反而堵死了"小模型上
+// 确实想要全量精确值"这条正常用法。
+//
+// 阈值 1 GiB 是为了不让小模型也刷一行 —— 那时提示只是噪音。
+func warnNoSample(m *model.Model, limit int) {
+	if limit != 0 {
+		return
+	}
+	var peak int64
+	for _, tn := range m.Tensors {
+		if tn.ParamCount > peak {
+			peak = tn.ParamCount
+		}
+	}
+	const bytesPerElem = 8 // 实测标定，见上
+	if est := peak * bytesPerElem; est < 1<<30 {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"modelview: --sample-limit 0 不采样；最大张量 %s 个元素，预估峰值内存约 %s\n",
+		humanize.Count(peak), humanize.Bytes(peak*bytesPerElem))
 }
