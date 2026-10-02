@@ -165,67 +165,75 @@ func TestComputeStats_直方图不丢计数(t *testing.T) {
 	}
 }
 
-// 等距采样：每 step 个取一个，结果必须可复现。
-func TestSample_等距且可复现(t *testing.T) {
-	vals := make([]float32, 1000)
-	for i := range vals {
-		vals[i] = float32(i)
+// 等距采样：点数与步长必须让采样铺开到首尾。
+//
+// 原来这条测的是"两次调用结果相同"（可复现）—— 那条对纯函数是
+// 恒真的，而 pickIndices 被 sampleStep 取代之后下标不再落地，
+// **真正的守卫挪到了 TestDecodeSampled_采样值等于全量对应位置**：
+// 那里断言的是取到的值，不是内部下标。
+func TestSampleStep_铺开到首尾(t *testing.T) {
+	count, step := sampleStep(1000, 100)
+	if count != 100 {
+		t.Fatalf("点数 = %d, want 100", count)
 	}
-	a := pickIndices(len(vals), 100)
-	b := pickIndices(len(vals), 100)
-
-	if len(a) != 100 {
-		t.Fatalf("样本数 = %d, want 100", len(a))
+	if step != 10 {
+		t.Fatalf("步长 = %v, want 10", step)
 	}
-	if len(a) != len(b) {
-		t.Fatalf("两次采样长度不同: %d vs %d", len(a), len(b))
+	// 首尾都要取到
+	if idx := int64(float64(0) * step); idx != 0 {
+		t.Errorf("首个下标 = %d, want 0", idx)
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			t.Fatalf("采样结果不可复现: [%d] %v vs %v", i, a[i], b[i])
-		}
-	}
-	// 等距采样应当铺开：首尾都要取到
-	if a[0] != 0 {
-		t.Errorf("首个下标 = %v, want 0", a[0])
-	}
-	if a[len(a)-1] < 900 {
-		t.Errorf("末个下标 = %v —— 采样没有铺开到尾部", a[len(a)-1])
+	if idx := int64(float64(count-1) * step); idx < 900 {
+		t.Errorf("末个下标 = %d —— 采样没有铺开到尾部", idx)
 	}
 }
 
-// 元素数不超过上限时不采样，返回全部下标。
-func TestPickIndices_不超限则全取(t *testing.T) {
-	got := pickIndices(3, 10)
-	if len(got) != 3 {
-		t.Fatalf("取到 %d 个下标, want 3", len(got))
-	}
-	for i, v := range got {
-		if v != int64(i) {
-			t.Errorf("下标[%d] = %d, want %d", i, v, i)
-		}
+// 元素数不超过上限时不采样：步长 1、点数=总数。
+func TestSampleStep_不超限则全取(t *testing.T) {
+	count, step := sampleStep(3, 10)
+	if count != 3 || step != 1 {
+		t.Errorf("sampleStep(3, 10) = (%d, %v), want (3, 1)", count, step)
 	}
 }
 
 // limit <= 0 视为不限制。
-func TestPickIndices_上限为零表示不限制(t *testing.T) {
-	if got := pickIndices(5, 0); len(got) != 5 {
-		t.Errorf("取到 %d 个下标, want 5", len(got))
+func TestSampleStep_上限为零表示不限制(t *testing.T) {
+	if count, step := sampleStep(5, 0); count != 5 || step != 1 {
+		t.Errorf("sampleStep(5, 0) = (%d, %v), want (5, 1)", count, step)
+	}
+}
+
+// 空输入与负输入：点数 0，且步长不能是 0（调用方会拿它做除法）。
+func TestSampleStep_空输入(t *testing.T) {
+	for _, total := range []int{0, -1} {
+		count, step := sampleStep(total, 100)
+		if count != 0 {
+			t.Errorf("sampleStep(%d, 100) 的点数 = %d, want 0", total, count)
+		}
+		if step == 0 {
+			t.Errorf("sampleStep(%d, 100) 的步长是 0 —— 调用方会除零", total)
+		}
 	}
 }
 
 // 采样下标必须严格递增且不重复 —— 重复会让某些值被计两次。
-func TestPickIndices_严格递增不重复(t *testing.T) {
-	got := pickIndices(1_000_000, 1000)
-	if len(got) != 1000 {
-		t.Fatalf("取到 %d 个下标, want 1000", len(got))
+//
+// 下标不再落地，所以这条改成"按公式算出来的下标"来验。
+func TestSampleStep_严格递增不重复(t *testing.T) {
+	const total, limit = 1_000_000, 1000
+	count, step := sampleStep(total, limit)
+	if count != limit {
+		t.Fatalf("点数 = %d, want %d", count, limit)
 	}
-	for i := 1; i < len(got); i++ {
-		if got[i] <= got[i-1] {
-			t.Fatalf("下标未递增: [%d]=%d <= [%d]=%d", i, got[i], i-1, got[i-1])
+	prev := int64(-1)
+	for i := 0; i < count; i++ {
+		idx := int64(float64(i) * step)
+		if idx <= prev {
+			t.Fatalf("下标未递增: [%d]=%d <= %d", i, idx, prev)
 		}
+		prev = idx
 	}
-	if got[len(got)-1] >= 1_000_000 {
-		t.Errorf("末个下标 %d 越界", got[len(got)-1])
+	if prev >= total {
+		t.Errorf("末个下标 %d 越界（总数 %d）", prev, total)
 	}
 }

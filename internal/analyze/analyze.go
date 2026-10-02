@@ -245,12 +245,14 @@ func decodeSampled(src source, tn *model.Tensor, limit int) ([]float32, error) {
 		elems = 1
 	}
 
-	idx := pickIndices(int(tn.ParamCount), limit)
-	if len(idx) == 0 {
+	// 只取点数与步长，**不落地下标**（8 B/元素，见 sampleStep）。
+	// 第 i 个采样点的下标现算：int64(float64(i) * step)。
+	count, step := sampleStep(int(tn.ParamCount), limit)
+	if count == 0 {
 		return nil, nil
 	}
 
-	out := make([]float32, len(idx))
+	out := make([]float32, count)
 	// decoded 跨块复用：每轮按需扩容，避免每个块都分配一次
 	var decoded []float32
 
@@ -259,14 +261,14 @@ func decodeSampled(src source, tn *model.Tensor, limit int) ([]float32, error) {
 		blocksPerChunk = 1
 	}
 
-	for start := 0; start < len(idx); {
+	for start := 0; start < count; {
 		// 本轮的块区间：从第一个采样点所在的块，到 blocksPerChunk 个块之后
-		firstBlock := idx[start] / elems
+		firstBlock := int64(float64(start)*step) / elems
 		end := start
-		for end < len(idx) && idx[end]/elems-firstBlock < blocksPerChunk {
+		for end < count && int64(float64(end)*step)/elems-firstBlock < blocksPerChunk {
 			end++
 		}
-		nBlocks := idx[end-1]/elems - firstBlock + 1
+		nBlocks := int64(float64(end-1)*step)/elems - firstBlock + 1
 
 		raw, err := src.readRaw(tn, firstBlock*perBlock, nBlocks*perBlock)
 		if err != nil {
@@ -282,7 +284,7 @@ func decodeSampled(src source, tn *model.Tensor, limit int) ([]float32, error) {
 		}
 
 		for ; start < end; start++ {
-			out[start] = decoded[idx[start]-firstBlock*elems]
+			out[start] = decoded[int64(float64(start)*step)-firstBlock*elems]
 		}
 	}
 	return out, nil

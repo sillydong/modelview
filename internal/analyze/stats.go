@@ -112,30 +112,29 @@ func fillHistogram(s *model.Stats, valid []float64, buckets int) {
 	}
 }
 
-// pickIndices 返回等距采样的元素下标。
+// sampleStep 返回等距采样的**点数与步长**，不返回下标切片。
 //
 // 等距而不是随机：量化权重是有序的（同一行的权重同分布、不同行可能差很多），
 // 随机采样会引入不可复现的抖动，等距采样对有序数据更稳健，结果也稳定。
 //
-// 元素数不超过 limit 时返回全部下标 —— 此时不采样，结果就是精确值。
+// **不落地下标是内存优化**：`[]int64` 是 8 B/元素，默认 1e7 采样时占
+// 76 MiB；不采样（--sample-limit 0）时等于张量元素数 × 8 —— 一个
+// 3.11 亿元素的张量上光这一项就是 2.32 GB。而下标是等差序列
+// `int64(i*step)`，随时可以算出来，没有理由驻留。
+//
+// **步长必须保持 float64**：原实现就是 `total/limit` 的浮点除法，
+// 换成整数除法会取到不同的元素（total=1009、limit=100 时步长
+// 10.09 vs 10，取到的位置就此分叉）。这是纯内存优化，数值一个字
+// 都不许变 —— TestDecodeSampled_采样值等于全量对应位置 钉住这一点。
+//
+// 元素数不超过 limit 时 step=1、count=total，即不采样。
 // limit <= 0 同样视为不限制。
-func pickIndices(total int, limit int) []int64 {
+func sampleStep(total, limit int) (count int, step float64) {
 	if total <= 0 {
-		return nil
+		return 0, 1
 	}
 	if limit <= 0 || total <= limit {
-		out := make([]int64, total)
-		for i := range out {
-			out[i] = int64(i)
-		}
-		return out
+		return total, 1
 	}
-	step := float64(total) / float64(limit)
-	out := make([]int64, limit)
-	for i := range out {
-		// 用乘法而不是累加：累加 float64 会让误差随下标增长，
-		// 采到后面可能重复或跳号。
-		out[i] = int64(float64(i) * step)
-	}
-	return out
+	return limit, float64(total) / float64(limit)
 }

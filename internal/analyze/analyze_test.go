@@ -994,3 +994,69 @@ func TestNeedsWork_无可模拟值不算欠账(t *testing.T) {
 		}
 	}
 }
+
+// 采样取到的必须是**全量里对应位置**的那些值。
+//
+// 这是 Task 12（下标不落地）的不变量：把 `[]int64` 换成"按公式现算"
+// 是纯内存优化，数值一个字都不许变。断言打在**值**上而不是下标上 ——
+// 下标是内部结构，值才是用户看到的。
+//
+// 期望下标用**原实现的公式**独立算（见下面的 wantStep），不是拿
+// sampleStep 的返回值 —— 后者只能证明两个函数自洽，证明不了
+// "与改动前相同"。
+func TestDecodeSampled_采样值等于全量对应位置(t *testing.T) {
+	const n = 4096
+	vals := make([]float32, n)
+	for i := range vals {
+		vals[i] = float32(i) // 值就是下标，便于定位取错了哪一格
+	}
+	p := rawFile(t, f32Bytes(vals...))
+	src, err := openSource(&model.Model{Path: p, Format: model.FormatSafeTensors})
+	if err != nil {
+		t.Fatalf("openSource 失败: %v", err)
+	}
+	defer src.Close() //nolint:errcheck // 测试清理
+
+	tn := &model.Tensor{
+		Name: "w", Dtype: model.DtypeF32,
+		Offset: 0, ByteSize: n * 4, ParamCount: n,
+	}
+
+	full, err := decodeSampled(src, tn, -1) // 不采样
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != n {
+		t.Fatalf("不采样时取到 %d 个值，want %d", len(full), n)
+	}
+
+	// 含不整除的点：步长是 float64，整数除法会取到别的元素
+	for _, limit := range []int{1, 3, 7, 100, 999, 1000, 4095, 4096, 4097} {
+		got, err := decodeSampled(src, tn, limit)
+		if err != nil {
+			t.Fatalf("limit=%d: %v", limit, err)
+		}
+		// **期望值必须用原实现的公式独立算一遍**，不能拿 sampleStep
+		// 返回的 step 去算 —— 那样步长算错了测试也跟着错，只证明了
+		// "decodeSampled 与 sampleStep 自洽"，而这条测试要证的是
+		// "取到的元素与改动前相同"。变异验证实测报过「漏网」：
+		// 把浮点除法换成整数除法，取到的元素变了，测试照样通过。
+		wantCount := limit
+		wantStep := float64(n) / float64(limit)
+		if limit <= 0 || n <= limit {
+			wantCount, wantStep = n, 1
+		}
+		if len(got) != wantCount {
+			t.Errorf("limit=%d: 取到 %d 个值，want %d", limit, len(got), wantCount)
+			continue
+		}
+		for i, v := range got {
+			idx := int64(float64(i) * wantStep)
+			if v != full[idx] {
+				t.Errorf("limit=%d: 第 %d 个值 = %v, want full[%d] = %v",
+					limit, i, v, idx, full[idx])
+				break
+			}
+		}
+	}
+}
